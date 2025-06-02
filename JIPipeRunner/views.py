@@ -55,7 +55,9 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     """
 
     # Parse the incoming configuration
-    jipipe_json = json.loads(request.body.decode('utf-8'))
+    json_request = json.loads(request.body.decode('utf-8'))
+    jipipe_json = json_request.get('jip_content')
+    parameter_override_json = json_request.get('jip_parameter_overrides', {})
 
     cache.set('test_key', 'from_view', timeout=120)
 
@@ -84,7 +86,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
 
     # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
     run_jipipe_task.apply_async(
-        args=[jipipe_json, job_uuid, owner, log_file],
+        args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file],
         task_id=job_uuid,
         ignore_result=True,
     )

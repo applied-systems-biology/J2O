@@ -294,8 +294,8 @@
   <script>
     (async function () {
       // global variables used across the script
-      const paramKeyByNodeUuid = {}; // Maps node UUIDs to parameter keys
       let jip_file_content = null;  // Holds the fetched .jip file contents
+      let jip_file_parameter_overrides = {}; // Holds user-defined parameter overrides
       const activeJobs = new Set();  // Set to track currently running jobs
       const csrftoken = getCookieValue('csrftoken');  // CSRF token for secure requests
       const originalInfoState = document.getElementById('jipipe_info_input_sections').innerHTML;  // Store the original state of the info containers
@@ -439,10 +439,12 @@
             row.className = 'input-row';
 
             // Create a reference ID based on the UUID given by the nodeMap
-            const inputId = `dataset-id-${uuid}`;
+            const inputId = `${uuid}/dataset-ids`;
 
             // Get the value from the .jip file if available, or use an empty string as a placeholder
             const existingIds = (node['dataset-ids'] || []).join(', ');
+
+            jip_file_parameter_overrides[inputId] = existingIds;
 
             // Construct the input field with a label and placeholder
             row.innerHTML = `
@@ -476,13 +478,15 @@
 
             // Get the UUID and parameter key of the node to navigate to the correct node in the nodesMap
             const [uuid, paramKey] = entry.path.split('/');
-            paramKeyByNodeUuid[uuid] = paramKey;
 
             // Get the default value from the nodeMap if available to use as a placeholder
             const defaultValue = nodesMap[uuid]?.[paramKey] || '';
 
+            // Construct the override JSON
+            jip_file_parameter_overrides[entry.path] = defaultValue;
+
             // use UUID of the node to create a unique ID for the input field
-            const fieldId = `param-${uuid}`;
+            const fieldId = `${entry.path}`;
 
             // Get the clean description of the parameter to display in the tooltip
             const raw_description = entry['custom-description'] || '';
@@ -552,26 +556,35 @@
         // Clear previous log output
         logOutput.textContent = '';
 
-        // Iterate over nodes in the selected .jip file to update input and parameters based on user input
-        Object.entries(jip_file_content.graph.nodes).forEach(([uuid, node]) => {
+        // Iterate over the jip_file_parameter_overrides to update it according to user input from the input fields
+        Object.entries(jip_file_parameter_overrides).forEach(([key, _]) => {
+          
+          // Get input element by ID based on the key
+          const inputElement = document.getElementById(`${key}`);
 
-          // If the node is an input node, update the dataset IDs based on user input
-          if (node['jipipe:alias-id']?.includes('define-dataset-ids')) {
-            const inputValue = document.getElementById(`dataset-id-${uuid}`).value.trim();
-            if (inputValue) node['dataset-ids'] = inputValue.split(',').map(v => v.trim());
-          }
-          // If the node is a parameter node, update the parameter value based on user input
-          if (uuid in paramKeyByNodeUuid) {
-            const userInput = document.getElementById(`param-${uuid}`).value.trim();
-            if (userInput) node[paramKeyByNodeUuid[uuid]] = userInput;
+          // Get the value from the input field and trim whitespaces
+          const inputValue = inputElement.value.trim();
+
+          // If the input value is empty, use the placeholder value as the final value
+          const finalValue = inputValue !== "" ? inputValue : inputElement.placeholder;
+
+          if (key.includes('dataset-ids')) {
+            // If the input is for dataset IDs, split by comma and trim each ID
+            jip_file_parameter_overrides[key] = finalValue.split(',').map(id => id.trim()).filter(id => id !== '');
+          } else {
+            // For other parameters, just use the placeholder value
+            jip_file_parameter_overrides[key] = finalValue;
           }
         });
 
-        // Send the updated .jip file content to the server to start the job
+        // Send the .jip file content and the override JSON to the server to start the job
         const response = await fetch('/JIPipeRunner/jipipe_start_job/', {
           method: 'POST', credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrftoken },
-          body: JSON.stringify(jip_file_content)
+           body: JSON.stringify({
+              jip_content: jip_file_content,
+              jip_parameter_overrides: jip_file_parameter_overrides
+            })
         });
 
         // If the response is not OK, display an error message in the log output

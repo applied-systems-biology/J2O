@@ -22,7 +22,7 @@ param omero_user_name: Username of the OMERO user running the job
 param jipipe_log_file_path: Path to the log file for the JIPipe job
 """
 @shared_task(bind=True)
-def run_jipipe_task(self, jipipe_project_config, job_uuid, omero_user_name, jipipe_log_file_path):
+def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uuid, omero_user_name, jipipe_log_file_path):
 
     # Initialize logging
     log = logging.getLogger(__name__)
@@ -33,9 +33,14 @@ def run_jipipe_task(self, jipipe_project_config, job_uuid, omero_user_name, jipi
 
     try:
         # Save the JIPipe project configuration to a file to access it via ImageJ CLI
-        jip_project_file = Path(temp_input) / 'JIPipeProject.jip'
-        with open(jip_project_file, 'w') as f:
+        jip_project_file_path = Path(temp_input) / 'JIPipeProject.jip'
+        with open(jip_project_file_path, 'w') as f:
             json.dump(jipipe_project_config, f)
+
+        # Save the JIPipe project parameter override to a file to access it via ImageJ CLI
+        jip_parameter_override_file_path = Path(temp_input) / 'JIPipeProject_Parameter_Override.json'
+        with open(jip_parameter_override_file_path, 'w') as f:
+            json.dump(parameter_override_json, f)
 
         # Get the ImageJ path from the OMERO configuration to run JIPipe on
         cfg_file = os.path.join(os.environ["OMERODIR"], "etc", "grid", "config.xml")
@@ -51,8 +56,9 @@ def run_jipipe_task(self, jipipe_project_config, job_uuid, omero_user_name, jipi
             '--memory', '8G',
             '--pass-classpath', '--full-classpath',
             '--main-class', 'org.hkijena.jipipe.cli.JIPipeCLIMain',
-            'run', '--project', str(jip_project_file),
-            '--output-folder', temp_output,
+            'run', '--project', str(jip_project_file_path),
+            '--output-folder', temp_output, 
+            '--overwrite-parameters', str(jip_parameter_override_file_path),
         ]
         # Run the command and log the output
         with open(jipipe_log_file_path, 'w') as log_file:
