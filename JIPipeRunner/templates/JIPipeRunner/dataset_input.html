@@ -296,6 +296,7 @@
       // global variables used across the script
       let jip_file_content = null;  // Holds the fetched .jip file contents
       let jip_file_parameter_overrides = {}; // Holds user-defined parameter overrides
+      let jip_file_name = null;  // Holds the name of the selected .jip file
       const activeJobs = new Set();  // Set to track currently running jobs
       const csrftoken = getCookieValue('csrftoken');  // CSRF token for secure requests
       const originalInfoState = document.getElementById('jipipe_info_input_sections').innerHTML;  // Store the original state of the info containers
@@ -327,13 +328,22 @@
         const resp = await fetch('/JIPipeRunner/list_jipipe_jobs/', {
           credentials: 'same-origin'
         });
-        if (resp.ok) {
-          // If the response is OK, get the job ids and add each job to the RunningJobs section
-          const { job_ids } = await resp.json();
-          job_ids.forEach(jobId => addRunningJob(jobId));
-        } else {
+        if (!resp.ok) {
           console.warn('Unable to load running jobs:', resp.status);
+          return;
         }
+
+        // If the response is OK, get the job infos
+        const { job_infos } = await resp.json();
+
+        // Clear the current list in DOM and memory
+        const job_list = document.getElementById('runningJobsList');
+        job_list.innerHTML = '';
+        activeJobs.clear();
+
+        // Re-add all current jobs
+        job_infos.forEach(job => addRunningJob(job.job_uuid, job.name, job.start_time));
+
       } catch (err) {
         console.error('Error fetching running jobs:', err);
       }
@@ -345,7 +355,7 @@
        * @see removeRunningJob for removing the job-reference from the cache and updating the "Running Jobs" section.
        * @see stopPipelineJob for stopping the job on the server.
        */
-      function addRunningJob(jobId) {
+      function addRunningJob(jobId, name, start_time) {
         // Check if the job is already in the active jobs set and skip adding it if true
         if (activeJobs.has(jobId)) return;
 
@@ -360,7 +370,7 @@
         // Populate the job list item with the job ID and a cancel button
         // TODO: Instead of using UUID, use a more user-friendly job identifier if available (name and start time)
         job_list_item.innerHTML = `
-          <span class="job-id">${jobId}</span>
+          <span class="job-id">${start_time}: ${name}</span>
           <button class="cancel-btn" title="Cancel job">&#10006;</button>
         `;
 
@@ -583,7 +593,8 @@
           headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrftoken },
            body: JSON.stringify({
               jip_content: jip_file_content,
-              jip_parameter_overrides: jip_file_parameter_overrides
+              jip_parameter_overrides: jip_file_parameter_overrides,
+              jip_name: jip_file_name
             })
         });
 
@@ -595,8 +606,8 @@
         }
 
         // Get the job ID from the response and add it to the "Running Jobs" section if request was successful
-        const { job_id: jobId } = await response.json();
-        addRunningJob(jobId);
+        const { job_id: jobId, job_name: name, job_start_time: start_time } = await response.json();
+        addRunningJob(jobId, name, start_time);
 
         // Track whether the job is finished and the previous log length
         let finished = false;
@@ -673,6 +684,7 @@
       try {
         // Load the running jobs and available .jip files
         loadRunningJobs();
+        setInterval(loadRunningJobs, 2000);  // TODO: Make this a real-time SSE connection in the future
         listAvailableJIPFiles();
 
         // EventListener: On click of the start button, execute the pipeline job
@@ -686,6 +698,9 @@
 
             // Get the selected .jip file ID to get its content
             const selectedJipFileID = event.target.value;
+
+            // Update the global variable for the selected JIP file name
+            jip_file_name = event.target.options[event.target.selectedIndex].text;
 
             // If a .jip file is selected, fetch its content and update the UI
             if (selectedJipFileID) {

@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import logging
 import os
@@ -58,8 +59,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     json_request = json.loads(request.body.decode('utf-8'))
     jipipe_json = json_request.get('jip_content')
     parameter_override_json = json_request.get('jip_parameter_overrides', {})
-
-    cache.set('test_key', 'from_view', timeout=120)
+    jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
 
     # TODO: Validate the JIPipe JSON structure here for security and correctness
 
@@ -77,11 +77,20 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     job_uuid = uuid.uuid4().hex
     log_file = os.path.join(LOG_DIR, f'{job_uuid}.log')
 
+    # Collect job information to store in the cache
+    job_info = {
+    "job_uuid": job_uuid,
+    "name": jip_file_name,
+    "start_time": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+    "log_file_path": log_file
+    }
+
     # Update the cache to track active jobs for the user
     owner = conn.getUser().getName()
+    logger.info(f"Starting JIPipe job for user {owner} with job ID {job_uuid}")
     user_key = f"active_jipipe_jobs_{owner}"
-    active = set(cache.get(user_key, []))
-    active.add(job_uuid)
+    active = cache.get(user_key, [])
+    active.append(job_info)
     cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
     # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
@@ -91,7 +100,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         ignore_result=True,
     )
 
-    return JsonResponse({'job_id': job_uuid})
+    return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': datetime.now().strftime('%d-%m-%Y %H:%M:%S')})
 
 @require_POST
 @login_required()
@@ -109,26 +118,27 @@ def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     try:
         # Parse the incoming JSON payload to get the job_id
         job_dict = json.loads(request.body)
-        job_id = job_dict.get('job_id')
-        if not job_id:
+        job_uuid = job_dict.get('job_id')
+        if not job_uuid:
             return JsonResponse({'error': 'Missing job_id'}, status=400)
         
         # Get the current user and their active jobs from cache to verify ownership
         owner = conn.getUser().getName()
         user_key = f"active_jipipe_jobs_{owner}"
-        active = set(cache.get(user_key, []))
-        if job_id not in active:
+        active = cache.get(user_key, [])
+        job_exists = any(job["job_uuid"] == job_uuid for job in active)
+        if not job_exists:
             return JsonResponse({'error': 'Job not found or not owned by you'}, status=404)
 
         # Revoke the Celery task (terminate immediately with SIGTERM)
-        result = AsyncResult(job_id)
+        result = AsyncResult(job_uuid)
         result.revoke(terminate=True, signal=signal.SIGTERM)
 
         # Remove the job from the active jobs cache after successful revoke
-        active.discard(job_id)
+        active = [job for job in active if job["job_uuid"] != job_uuid]
         cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-        return JsonResponse({'status': 'terminated', 'job_id': job_id})
+        return JsonResponse({'status': 'terminated', 'job_id': job_uuid})
 
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
@@ -148,8 +158,8 @@ def list_jipipe_jobs(request, conn=None, **kwargs):
     # Get the current user and their active jobs from cache
     owner = conn.getUser().getName()
     user_key = f"active_jipipe_jobs_{owner}"
-    job_ids = cache.get(user_key, [])
-    return JsonResponse({'job_ids': list(job_ids)})
+    active = cache.get(user_key, [])
+    return JsonResponse({'job_infos': active})
 
 @require_GET
 @login_required()
@@ -180,15 +190,16 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
         # Check if the job is still active by looking in the cache
         owner = conn.getUser().getName()
         user_key = f"active_jipipe_jobs_{owner}"
-        active = set(cache.get(user_key, []))
+        active = cache.get(user_key, [])
+        active_job_uuid_list = [job["job_uuid"] for job in active]
 
         # Determine if the job finished by checking the exit code message or if it is still in the active set
-        finished = any('JIPipe exited with code' in line for line in log_lines[-3:]) or (job_uuid not in active)
+        finished = any('JIPipe exited with code' in line for line in log_lines[-3:]) or (job_uuid not in active_job_uuid_list)
         status = 'finished' if finished else 'running'
 
         # Remove the job from active cache if it has finished but not removed yet
-        if finished and job_uuid in active:
-            active.discard(job_uuid)
+        if finished and job_uuid in active_job_uuid_list:
+            active = [job for job in active if job["job_uuid"] != job_uuid]
             cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
         return JsonResponse({'status': status, 'logs': log_lines})

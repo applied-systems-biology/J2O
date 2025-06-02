@@ -84,14 +84,7 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
             log_file.write(f"\n[ JIPipe exited with code {process.returncode} ]\n")
 
     except KeyboardInterrupt:
-        # On receiving SIGTERM, close cfg and clean up cache and temporary directories before exiting
-        cfg.close()
-        user_key = f"active_jipipe_jobs_{omero_user_name}"
-        active = set(cache.get(user_key, []))
-        active.discard(job_uuid)
-        cache.set(user_key, active, timeout=None)
-        shutil.rmtree(temp_input)
-        shutil.rmtree(temp_output)
+        # On receiving SIGTERM terminate the process
         os.killpg(process.pid, signal.SIGTERM)
         
     except Exception as e:
@@ -104,10 +97,8 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
         # Close cfg and clean up cache and temporary directories
         cfg.close()
         user_key = f"active_jipipe_jobs_{omero_user_name}"
-        active = set(cache.get(user_key, []))
-        log.info(f"Previous active JIPipe jobs for user {omero_user_name}: {active}")
-        active.discard(job_uuid)
+        active = cache.get(user_key, [])
+        active = [job for job in active if job["job_uuid"] != job_uuid]
         cache.set(user_key, active, timeout=None)
-        log.info(f"Updated active JIPipe jobs for user {omero_user_name}: {cache.get(user_key, [])}")
         shutil.rmtree(temp_input)
         shutil.rmtree(temp_output)
