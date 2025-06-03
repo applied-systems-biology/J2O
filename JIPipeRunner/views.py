@@ -60,18 +60,20 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     jipipe_json = json_request.get('jip_content')
     parameter_override_json = json_request.get('jip_parameter_overrides', {})
     jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
+    custom_output_config_enabled = json_request.get('custom_output_config_enabled', False)
 
     # TODO: Validate the JIPipe JSON structure here for security and correctness
 
-    # Ensure there is a JIPipeResults project to store outputs
-    results_project = _get_or_create_results_project(conn)
-    results_project_id = int(results_project.getId())
+    if not custom_output_config_enabled:
+        # Ensure there is a JIPipeResults project to store outputs
+        results_project = _get_or_create_results_project(conn)
+        results_project_id = int(results_project.getId())
 
-    # Assign dataset IDs of target output dataset to the define-project-ids nodes to save outputs to
-    for node in jipipe_json.get('graph', {}).get('nodes', {}).values():
-        node_alias_id = node.get('jipipe:alias-id', '').lower()
-        if 'define-project-ids' in node_alias_id:
-            node['dataset-ids'] = [results_project_id]
+        # Assign dataset IDs of target output dataset to the define-project-ids nodes to save outputs to
+        for node in jipipe_json.get('graph', {}).get('nodes', {}).values():
+            node_alias_id = node.get('jipipe:alias-id', '').lower()
+            if 'define-project-ids' in node_alias_id:
+                node['dataset-ids'] = [results_project_id]
 
     # Prepare the log file path and unique job identifier to reference the job later on
     job_uuid = uuid.uuid4().hex

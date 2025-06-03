@@ -66,6 +66,10 @@
       margin-bottom: var(--space-sm);
     }
 
+    #jipipe_form_container #output {
+      display: none;
+    }
+
     #jipipe_form_container .input-row {
       display: flex;
       flex-direction: column;
@@ -78,13 +82,21 @@
       margin-bottom: var(--space-sm);
     }
 
-    #jipipe_form_container .input-row input {
+    #jipipe_form_container .input-row input:not([type="checkbox"]) {
+      box-sizing: border-box;
       border: 1px solid var(--color-border);
       border-radius: 3px;
       font-size: var(--font-size-base);
-      max-width: 350px;
       padding: var(--space-sm);
       width: 100%;
+    }
+
+    #jipipe_form_container .input-row input::placeholder {
+    font-size: var(--font-size-base);
+    line-height: 1.4;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis; /* Optional for long placeholder text */
     }
 
     #jipipe_form_container #startRunnerBtn {
@@ -234,6 +246,24 @@
     width: max-content;
     max-width: 325px;
   }
+
+  #jipipe_form_container .checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    margin-top: var(--space-sm);
+    flex-wrap: nowrap; /* prevent wrapping */
+    align-self: center;
+  }
+
+  #jipipe_form_container .checkbox-row .inline-checkbox-label {
+    font-size: 0.75rem;
+    font-weight: normal;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   </style>
 </head>
 <body>
@@ -246,6 +276,10 @@
       <select id="JIPSelector" name="JIPSelector">
         <option value="">—Nothing selected—</option>
       </select>
+    <div class="checkbox-row">
+      <label id="enableOutputConfigLabel" class="inline-checkbox-label" for="enableOutputConfig">Enable output config:</label>
+      <input type="checkbox" id="enableOutputConfig" name="enableOutputConfig" unchecked>
+    </div>
     </section>
 
     <!-- Section: Running jobs -->
@@ -275,6 +309,13 @@
         <h2>Parameter Configuration</h2>
         <p>Enter parameter values below:</p>
         <!-- Parameter input fields will be generated here -->
+      </section>
+
+      <!-- Section: Output nodes (project IDs) -->
+      <section id="output">
+        <h2>Output Node Configuration</h2>
+        <p>Enter project ID for each output node and a name for the generated dataset:</p>
+        <!-- Input fields for project IDs and dataset name will be generated here -->
       </section>
     </div>
     
@@ -434,7 +475,7 @@
       }
 
       /**
-       * Create input fields for dataset IDs based on the input nodes in given .jip file nodeMap.
+       * Create input fields for dataset IDs based on the input nodes in the given .jip file nodeMap.
        * @param {Object} nodesMap - The map of nodes in the selected .jip file
        */
       function createDatasetInputFields(nodesMap) {
@@ -461,12 +502,107 @@
               <label for="${inputId}">${node['jipipe:node:name']}:</label>
               <input type="text"
                      id="${inputId}"
-                     name="datasetIds"
+                     name="${node['jipipe:node:name']}"
                      placeholder="${existingIds}">
               `;
 
             // Append the row to the input fields container
             container.appendChild(row);
+          }
+        });
+      }
+
+      /**
+       * Create input fields for project IDs based on the output nodes in the given .jip file nodeMap.
+       * @param {Object} nodesMap - The map of nodes in the selected .jip file
+       * @param {Object} graphEdges - The edges of the graph in the .jip file
+       */
+      function createOutputProjectInputFields(nodesMap, graphEdges) {
+        // Get the container for input fields
+        const container = document.getElementById('output');
+
+        // Iterate over the nodes and create input fields for those with 'define-dataset-ids' alias (input nodes according to JIPRunner convention)
+        Object.entries(nodesMap).forEach(([uuid, node]) => {
+          if (node['jipipe:alias-id']?.includes('define-project-ids')) {
+
+            // Add a check to see wether the node is connected to any other nodes
+            let connected = false;
+
+            // Create a new input row for the dataset ID
+            const row = document.createElement('div');
+            row.className = 'input-row';
+
+            // Create a reference ID based on the UUID given by the nodeMap
+            const inputId = `${uuid}/dataset-ids`;
+
+            // Get the value from the .jip file if available, or use an empty string as a placeholder
+            const existingIds = (node['dataset-ids'] || []).join(', ');
+
+            // Construct the input field with a label and placeholder
+            row.innerHTML += `
+              <label for="${inputId}">${node['jipipe:node:name']}:</label>
+              <input type="text"
+                     id="${inputId}"
+                     name="${node['jipipe:node:name']}"
+                     placeholder="${existingIds}">
+              `;
+
+            // Get child node ID via graphEdges to also configure the output dataset name
+            Object.entries(graphEdges).forEach(([_, edge]) => {
+              if (edge['source-node'] === uuid && edge['target-node'] && nodesMap[edge['target-node']]) {
+
+                connected = true;  // Mark as connected if there is a target node
+
+                // Get the target node ID and its name generator expression
+                const targetNodeId = edge['target-node'];
+                const targetNode = nodesMap[targetNodeId];
+                const existingName = targetNode["name-generator"].expression || '';
+                // const escapedExistingName = existingName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+                
+                // Create input field for the output dataset name
+                const name_input_field = document.createElement('input');
+                name_input_field.type = 'text';
+                name_input_field.placeholder = existingName;
+                name_input_field.name = targetNode['jipipe:node:name'];
+                name_input_field.id = `${targetNodeId}/name-generator`;
+
+                // Create label for the output dataset name input field
+                const label = document.createElement('label');
+                label.htmlFor = name_input_field.id;
+                label.textContent = `Output dataset name for "${name_input_field.name}":`;
+
+                // Create checkbox to specify if input is an expression
+                const expression_checkbox = document.createElement('input');
+                expression_checkbox.type = 'checkbox';
+                expression_checkbox.name = name_input_field.id;
+                expression_checkbox.id = `${name_input_field.id}/is-expression`;
+                expression_checkbox.checked = true;  // Default to checked
+
+                const checkbox_label = document.createElement('label');
+                checkbox_label.htmlFor = expression_checkbox.id;
+                checkbox_label.textContent = 'Input as expression: ';
+                checkbox_label.classList.add('inline-checkbox-label');
+
+                // Create wrapper div for checkbox + label
+                const checkboxWrapper = document.createElement('div');
+                checkboxWrapper.classList.add('checkbox-row'); // Add custom class
+                checkboxWrapper.appendChild(checkbox_label);
+                checkboxWrapper.appendChild(expression_checkbox);
+
+
+                // Add to jip parameter override and append it to row
+                const { expression } = targetNode["name-generator"];
+                jip_file_parameter_overrides[name_input_field.id] = existingName;
+                row.appendChild(label);
+                row.appendChild(name_input_field);
+                row.appendChild(checkboxWrapper);
+              }
+            });
+            // Append the row to the input fields container if the node is connected to any other nodes
+            if (connected){
+              container.appendChild(row);
+              jip_file_parameter_overrides[inputId] = existingIds;
+            }            
           }
         });
       }
@@ -562,6 +698,7 @@
         const logOutput = document.getElementById('logOutput');
         const logContainer = logOutput.parentElement;
         const start_button = document.getElementById('startRunnerBtn');
+        const customOutputConfigEnabled = document.getElementById('enableOutputConfig').checked;
 
         // Clear previous log output
         logOutput.textContent = '';
@@ -572,18 +709,24 @@
           // Get input element by ID based on the key
           const inputElement = document.getElementById(`${key}`);
 
-          // Get the value from the input field and trim whitespaces
-          const inputValue = inputElement.value.trim();
-
           // If the input value is empty, use the placeholder value as the final value
-          const finalValue = inputValue !== "" ? inputValue : inputElement.placeholder;
+          const inputValue = inputElement.value !== "" ? inputElement.value : inputElement.placeholder;
 
-          if (key.includes('dataset-ids')) {
-            // If the input is for dataset IDs, split by comma and trim each ID
-            jip_file_parameter_overrides[key] = finalValue.split(',').map(id => id.trim()).filter(id => id !== '');
-          } else {
-            // For other parameters, just use the placeholder value
-            jip_file_parameter_overrides[key] = finalValue;
+          // Turn the input value into a final value
+          const finalValue = transformToJIPipeCompatibleValue(inputValue, key);
+
+          jip_file_parameter_overrides[key] = finalValue;
+
+          if (!customOutputConfigEnabled) {
+              const nodesMap = jip_file_content.graph.nodes;
+              const uuid = key.split('/')[0];
+              const node = nodesMap[uuid];
+              const isDefineProjectNode = node['jipipe:alias-id']?.includes('define-project-ids');
+              const isCreateDatasetNode = node['jipipe:alias-id']?.includes("create-omero-dataset");
+
+              if (isDefineProjectNode || isCreateDatasetNode) {
+                delete jip_file_parameter_overrides[key];
+              }
           }
         });
 
@@ -594,7 +737,8 @@
            body: JSON.stringify({
               jip_content: jip_file_content,
               jip_parameter_overrides: jip_file_parameter_overrides,
-              jip_name: jip_file_name
+              jip_name: jip_file_name,
+              custom_output_config_enabled: document.getElementById('enableOutputConfig').checked
             })
         });
 
@@ -644,6 +788,30 @@
         }
         // After the job is finished, remove the job from the active jobs cache and update the UI
         removeRunningJob(jobId);
+      }
+
+      function transformToJIPipeCompatibleValue(inputValue, key){
+
+        // Always trim the input value to remove leading and trailing whitespace
+        const trimmedInput = inputValue.trim();
+
+        // If the key includes 'dataset-ids', split by comma and return an array of clean IDs
+        if (key.includes('dataset-ids')) {
+          return trimmedInput.split(',').map(id => id.trim()).filter(id => id !== '');
+        }
+
+        // If the key includes 'name-generator', check if the "Input as Expression" checkbox is checked
+        else if (key.includes('name-generator')) {
+
+          // If the checkbox is not checked, wrap the expression in quotes
+          if (!document.getElementsByName(key)[0].checked){
+            const escapedInput = trimmedInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            return { expression: `"${escapedInput}"` };
+          }
+          return { expression: trimmedInput };
+        }
+        // Default: just return trimmed input value
+        return trimmedInput;
       }
 
       /**
@@ -712,8 +880,10 @@
                 // Fetch the .jip file content and update the info sections with node summary, input fields, and parameter fields
                 jip_file_content = await fetchPipelineConfig(selectedJipFileID);
                 const nodesMap = jip_file_content.graph.nodes;
+                const graphEdges = jip_file_content.graph.edges;
                 displayNodeSummary(nodesMap);
                 createDatasetInputFields(nodesMap);
+                createOutputProjectInputFields(nodesMap, graphEdges);
                 createParameterFields(jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters'], nodesMap);
 
               // If an error occurs while fetching the .jip file content, display an error message in the file info section
@@ -727,6 +897,15 @@
               document.getElementById('jipipe_info_input_sections').innerHTML = originalInfoState;
             }
           });
+        
+        document.getElementById('enableOutputConfig').addEventListener('change', (event) => {
+          const outputSection = document.getElementById('output');
+          if (event.target.checked) {
+            outputSection.style.display = 'block';
+          } else {
+            outputSection.style.display = 'none';
+          }
+        });
       }
       // Catch any errors that occur during the initialization and display an error message in the container
       catch (error) {
