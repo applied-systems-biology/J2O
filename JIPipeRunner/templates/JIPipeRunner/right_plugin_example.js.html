@@ -7,9 +7,9 @@
                 return true;
            },
            load_plugin_content: function(selected, obj_dtype, obj_id) {
-                   // Dynamically generate the URL with the correct project_id
-                   var url = "{% url 'jipipe_runner_index' %}";
-                   $(this).load(url);
+               // Create the plugin container
+               var url = "{% url 'jipipe_runner_index' %}";
+               $(this).load(url);
             },
        });
     });
