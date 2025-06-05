@@ -55,6 +55,17 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     param conn: OMERO connection object (optional, used for user context)
     """
 
+    # Check for a live worker via inspect().ping()
+    try:
+        inspector = app.control.inspect()
+        ping_response = inspector.ping() or {}
+    except Exception:
+        ping_response = {}
+
+    # If no worker replies, don't start job
+    if not ping_response:
+        return JsonResponse({'error': 'Could not start job. No Celery workers are currently running.'}, status=503)
+
     # Parse the incoming configuration
     json_request = json.loads(request.body.decode('utf-8'))
     jipipe_json = json_request.get('jip_content')
@@ -258,61 +269,52 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
     param conn: OMERO connection object (optional, used for user context)
     """
     try:
-        # Store the JIPipe files attached to projects in groups of current user
-        owned_project_annotation_files = []
+        orig_gid = conn.SERVICE_OPTS.getOmeroGroup()
+        groups = conn.listGroups()
 
-        # Set of seen file IDs to prevent duplicates
+        # Keep track of which file IDs we’ve already seen
         seen_file_ids = set()
 
-        # Get the list of groups the user is a member of to prevent unauthorized access
-        user_groups = conn.getGroupsMemberOf()
+        # Prepare a Python list to hold {fileID:…, fileName:…} dicts
+        all_annotations = []
 
-        # Save the current group so we can switch back later
-        current_group = conn.getEventContext().groupId
+        # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
+        for grp in groups:
+            # Set the session’s “active group” to gid
+            conn.SERVICE_OPTS.setOmeroGroup(grp.id)
 
-        # Iterate through each group the user is a member of
-        for group in user_groups:
-            group_id = group.getId()
+            # Retrieve all FileAnnotation objects visible in this group
+            # (returns a list of OMERO‐wrappers for FileAnnotation)
+            fas = conn.getObjects("FileAnnotation")
+            for fa in fas:
 
-            # Switch to the group for accessing its projects
-            conn.setGroupForSession(group_id)
+                # Extract the numeric ID and the original filename
+                file_id = fa.getFile().getId()
 
-            # Get all projects in the group
-            projects = list(conn.getObjects("Project"))
+                # Skip if we've already added this file_id
+                if file_id in seen_file_ids:
+                    continue
+                seen_file_ids.add(file_id)
 
-            # Iterate through each project in the group
-            for project in projects:
+                # The FileAnnotation wrapper has a .getFile() method returning a FileI
+                file_name = fa.getFile().getName()
+                all_annotations.append({
+                    'file_id': file_id,
+                    'file_name': file_name
+                })
 
-                # Get annotations (can include files, tags, etc.)
-                annotations = project.listAnnotations()
-
-                # Iterate through each annotation in the project to find JIPipe files
-                for ann in annotations:
-                    # Filter for file annotations that are JIPipe files
-                    if ann.OMERO_TYPE == omero.model.FileAnnotationI and ann.getFile().getName().endswith('.jip'):
-                        file_obj = ann.getFile()
-                        file_id = file_obj.getId()
-
-                        # If the file ID has not been seen before, add it to the list
-                        if file_id not in seen_file_ids:
-                            seen_file_ids.add(file_id)
-                            owned_project_annotation_files.append({
-                                "file_id": file_id,
-                                "file_name": file_obj.getName()
-                            })
-
-        # Switch back to the original group
-        conn.setGroupForSession(current_group)
-
-        return JsonResponse({'files': owned_project_annotation_files})
+        return JsonResponse({'files': all_annotations})
     
     except Exception as e:
         # log the full stack trace so you can see what went wrong
         logger.exception("Failed to list JIPipe files")
         return JsonResponse(
-            {'error': 'Internal server error retrieving JIPipe files.'},
+            {'error': f'Internal server error retrieving JIPipe files: {e}'},
             status=500
         )
+    
+    finally:
+        conn.SERVICE_OPTS.setOmeroGroup(orig_gid)
 
 # Helper: ensure the results project exists
 def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
