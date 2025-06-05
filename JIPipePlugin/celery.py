@@ -17,12 +17,6 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'JIPipePlugin.settings')
 app = Celery('JIPipePlugin', broker=redis_backend, backend=redis_backend)
 # run on omero-web: celery -A JIPipePlugin worker --loglevel=info -E
 
-# Using a string here means the worker doesn't have to serialize
-# the configuration object to child processes.
-# - namespace='CELERY' means all celery-related configuration keys
-#   should have a `CELERY_` prefix.
-# app.config_from_object('JIPipePlugin.settings', namespace='CELERY')
-
 # Load task modules from all registered Django apps.
 app.autodiscover_tasks()
 
