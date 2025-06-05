@@ -272,14 +272,16 @@
 
     <!-- Section: .jip file selection -->
     <section id="FileSelectorSection">
-      <label for="JIPSelector">Choose a .jip file:</label>
-      <select id="JIPSelector" name="JIPSelector">
-        <option value="">—Nothing selected—</option>
-      </select>
-    <div class="checkbox-row">
-      <label id="enableOutputConfigLabel" class="inline-checkbox-label" for="enableOutputConfig">Enable output config:</label>
-      <input type="checkbox" id="enableOutputConfig" name="enableOutputConfig" unchecked>
-    </div>
+      <div class="input-row">
+        <label for="JIPSelector">Choose a .jip file:</label>
+        <select id="JIPSelector" name="JIPSelector">
+          <option value="">—Nothing selected—</option>
+        </select>
+        <div class="checkbox-row">
+          <label id="enableOutputConfigLabel" class="inline-checkbox-label" for="enableOutputConfig">Enable output config:</label>
+          <input type="checkbox" id="enableOutputConfig" name="enableOutputConfig" unchecked>
+        </div>
+      </div>
     </section>
 
     <!-- Section: Running jobs -->
@@ -365,6 +367,15 @@
        */
       async function loadRunningJobs() {
       try {
+
+        // Get the job list html element
+        const job_list = document.getElementById('runningJobsList');
+
+        // If it doesn't exist yet, skip
+        if (job_list === null) {
+          return;
+        }
+
         // Fetch the list of running jobs from the server
         const resp = await fetch('/JIPipeRunner/list_jipipe_jobs/', {
           credentials: 'same-origin'
@@ -376,9 +387,7 @@
 
         // If the response is OK, get the job infos
         const { job_infos } = await resp.json();
-
         // Clear the current list in DOM and memory
-        const job_list = document.getElementById('runningJobsList');
         job_list.innerHTML = '';
         activeJobs.clear();
 
@@ -419,8 +428,8 @@
         const btn = job_list_item.querySelector('.cancel-btn');
         btn.addEventListener('click', () => {
           if (confirm(`Are you sure you want to cancel job ${jobId}?`)) {
-            stopPipelineJob(jobId);
             removeRunningJob(jobId);
+            stopPipelineJob(jobId);
           }
         });
 
@@ -520,6 +529,14 @@
       function createOutputProjectInputFields(nodesMap, graphEdges) {
         // Get the container for input fields
         const container = document.getElementById('output');
+        
+        // Set output display according to "Enable output config" checkbox
+        if (document.getElementById("enableOutputConfig").checked){
+          container.style.display = "block"
+        }
+        else{
+          container.style.display = "none"
+        }
 
         // Iterate over the nodes and create input fields for those with 'define-dataset-ids' alias (input nodes according to JIPRunner convention)
         Object.entries(nodesMap).forEach(([uuid, node]) => {
@@ -689,107 +706,13 @@
       }
 
       /**
-       * Execute the pipeline job by sending the .jip file content to the server and fetching logs.
-       * This function updates the .jip file content according to user input, sends the job request, and updates the log output.
-       */
-      async function executePipelineJob() {
-
-        // Reference the log output element, log output container and start button
-        const logOutput = document.getElementById('logOutput');
-        const logContainer = logOutput.parentElement;
-        const start_button = document.getElementById('startRunnerBtn');
-        const customOutputConfigEnabled = document.getElementById('enableOutputConfig').checked;
-
-        // Clear previous log output
-        logOutput.textContent = '';
-
-        // Iterate over the jip_file_parameter_overrides to update it according to user input from the input fields
-        Object.entries(jip_file_parameter_overrides).forEach(([key, _]) => {
-          
-          // Get input element by ID based on the key
-          const inputElement = document.getElementById(`${key}`);
-
-          // If the input value is empty, use the placeholder value as the final value
-          const inputValue = inputElement.value !== "" ? inputElement.value : inputElement.placeholder;
-
-          // Turn the input value into a final value
-          const finalValue = transformToJIPipeCompatibleValue(inputValue, key);
-
-          jip_file_parameter_overrides[key] = finalValue;
-
-          if (!customOutputConfigEnabled) {
-              const nodesMap = jip_file_content.graph.nodes;
-              const uuid = key.split('/')[0];
-              const node = nodesMap[uuid];
-              const isDefineProjectNode = node['jipipe:alias-id']?.includes('define-project-ids');
-              const isCreateDatasetNode = node['jipipe:alias-id']?.includes("create-omero-dataset");
-
-              if (isDefineProjectNode || isCreateDatasetNode) {
-                delete jip_file_parameter_overrides[key];
-              }
-          }
-        });
-
-        // Send the .jip file content and the override JSON to the server to start the job
-        const response = await fetch('/JIPipeRunner/jipipe_start_job/', {
-          method: 'POST', credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrftoken },
-           body: JSON.stringify({
-              jip_content: jip_file_content,
-              jip_parameter_overrides: jip_file_parameter_overrides,
-              jip_name: jip_file_name,
-              custom_output_config_enabled: document.getElementById('enableOutputConfig').checked
-            })
-        });
-
-        // If the response is not OK, display an error message in the log output
-        if (!response.ok) {
-          const errText = await response.text();
-          logOutput.textContent = `Error ${response.status}: ${errText}`;
-          return;
-        }
-
-        // Get the job ID from the response and add it to the "Running Jobs" section if request was successful
-        const { job_id: jobId, job_name: name, job_start_time: start_time } = await response.json();
-        addRunningJob(jobId, name, start_time);
-
-        // Track whether the job is finished and the previous log length
-        let finished = false;
-        let previousLogLength = 0;
-
-        // As long as the job is not finished, fetch logs from the server and update the log output
-        while (!finished) {
-
-          // Request the JIPipe logs for the current job from the server
-          const logResp = await fetch(`/JIPipeRunner/fetch_jipipe_logs/${jobId}/`, { credentials: 'same-origin' });
-
-          // If the log response is not OK, display an error message and retry after a delay
-          if (!logResp.ok) {
-            logOutput.textContent += `\nError fetching logs: ${logResp.status}. Retrying...`;
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            continue;
-          }
-
-          // If the log response is OK, parse the JSON response and update the log output
-          const { status, logs } = await logResp.json();
-          if (logs.length > previousLogLength) {
-            const newLines = logs.slice(previousLogLength).join('\n') + '\n';
-            logOutput.textContent += newLines;
-
-            // Scroll to the bottom of the log container to show the latest logs
-            logContainer.scrollTop = logContainer.scrollHeight;
-
-            // Update the previous log length to the current length
-            previousLogLength = logs.length;
-          }
-          // Update the status of the job if finished, else continue fetching logs
-          finished = (status === 'finished');
-          if (!finished) await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-        // After the job is finished, remove the job from the active jobs cache and update the UI
-        removeRunningJob(jobId);
-      }
-
+       * Transforms the input value to a JIPipe compatible format. 
+       * The necessary format is chosen based on the provided node key. 
+       * @param  {string} inputValue - The input value to be transformed.
+       * @param {string} key - A key in the format "{node_uuid}/{reference_parameter_name}" to identify the parameter type.
+       * @returns {string} - The JIPipe compatible value. 
+       * 
+      */
       function transformToJIPipeCompatibleValue(inputValue, key){
 
         // Always trim the input value to remove leading and trailing whitespace
@@ -815,22 +738,167 @@
       }
 
       /**
+      * Overrides the pipeline parameters based on user input.
+      * @returns {dict} - A dictionary that contains the key/value combinations for the JIPipe parameter override.
+      */
+      function createJobPipelineParametersOverride() {
+
+        // Get the status of the enableConfig checkbox to see whether output parameters needs to be overwritten
+        const customOutputConfigEnabled = document.getElementById('enableOutputConfig').checked;
+
+        // Copy the jip_file_parameter_overrides to create a custom override for each job
+        let job_parameter_override = { ...jip_file_parameter_overrides };
+
+        // Iterate the parameter_override dict to change the values according to user input
+        Object.entries(job_parameter_override).forEach(([key, _]) => {
+
+          // Reference the input element associated with the key to get its value
+          const inputElement = document.getElementById(`${key}`);
+          const inputValue = inputElement.value !== "" ? inputElement.value : inputElement.placeholder;
+          const finalValue = transformToJIPipeCompatibleValue(inputValue, key);
+
+          // Overwrite the entry with the JIPipe compatible value 
+          job_parameter_override[key] = finalValue;
+
+          // If output config should not be used, delete unnecessary entries from the dict
+          if (!customOutputConfigEnabled) {
+            const nodesMap = jip_file_content.graph.nodes;
+            const uuid = key.split('/')[0];
+            const node = nodesMap[uuid];
+            const isDefineProjectNode = node['jipipe:alias-id']?.includes('define-project-ids');
+            const isCreateDatasetNode = node['jipipe:alias-id']?.includes("create-omero-dataset");
+            if (isDefineProjectNode || isCreateDatasetNode) {
+              delete job_parameter_override[key];
+            }
+          }
+        });
+        return job_parameter_override;
+      }
+
+      /**
+      * Send the pipeline job to the server, add it to running jobs if response is okay and start the log update.
+      * @param {dict} - The parameter_overwrite dict that will be passed to JIPipe.
+      */
+      async function executePipelineJob(job_parameter_override) {
+
+        // Get the Log Window output and clear it to have a clean slate for the started job
+        const logOutput = document.getElementById('logOutput');
+        logOutput.textContent = '';
+
+        // Send a request to the server to start the job
+        const response = await fetch('/JIPipeRunner/jipipe_start_job/', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken
+          },
+          body: JSON.stringify({
+            jip_content: jip_file_content,
+            jip_parameter_overrides: job_parameter_override,
+            jip_name: jip_file_name,
+            custom_output_config_enabled: document.getElementById('enableOutputConfig').checked
+          })
+        });
+
+        // If the response is not okay, output an error message to the log window and don't add the job or log to the UI
+        if (!response.ok) {
+          const errorJSON = await response.json();
+          const errorMessage = errorJSON.error;
+          logOutput.textContent = `Error ${response.status}: ${errorMessage}`;
+          return;
+        }
+
+        // Get the response to add the job to the UI 
+        const { job_id: jobId, job_name: name, job_start_time: start_time } = await response.json();
+        addRunningJob(jobId, name, start_time);
+
+        // Wait for the log output to finish before removing the job from the UI (Log checks for finished status of job)
+        await updateLogWindow(jobId);
+        removeRunningJob(jobId);
+      }
+
+      /**
+      * Continuously fetch logs for the given job ID and update the log output.
+      */
+      async function updateLogWindow(jobId) {
+
+        // Get the log output DOM element to update it
+        const logOutput = document.getElementById('logOutput');
+        const logContainer = logOutput.parentElement;
+
+        // Add variables for status checks
+        let finished = false;
+        let previousLogLength = 0;
+        let retryCount = 0;
+
+        // Continue updating the log window until the job is finished
+        while (!finished) {
+          // Send a request to the server to fetch the JIPipe log of the associated job
+          const logResp = await fetch(`/JIPipeRunner/fetch_jipipe_logs/${jobId}/`, {
+            credentials: 'same-origin'
+          });
+          
+          // Error handling
+          if (!logResp.ok) {
+            // Retry fetching the log up to 5 times to allow log creation
+            if (retryCount < 5){
+              retryCount += 1;
+              logOutput.textContent += `\nError fetching logs: ${logResp.status}. Retrying...`;
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              continue;
+            }
+            // After 5 retries, terminate the log output. 
+            else{
+              logOutput.textContent += `\nError fetching logs: ${logResp.status}. Terminating log output! Check if Celery worker is running!`;
+              finished = true;
+              continue;
+            }
+          }
+
+          // Get the status of the job and the log content
+          const { status, logs } = await logResp.json();
+
+          // Update the UI if the fetched log content is larger than before
+          if (logs.length > previousLogLength) {
+            // Only add new content to the UI and update the logLength
+            const newLines = logs.slice(previousLogLength).join('\n') + '\n';
+            logOutput.textContent += newLines;
+            logContainer.scrollTop = logContainer.scrollHeight;
+            previousLogLength = logs.length;
+          }
+
+          // If the job status is finished, terminate log output and if not continue with it after 2 seconds
+          finished = (status === 'finished');
+          if (!finished) await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+      
+      /**
        * Fetch the list of available .jip files to the user from the server and populate the selector dropdown.
        * Also sets up an event listener to enable the start button when a file is selected and disables it when no file is selected.
        */
       async function listAvailableJIPFiles() {
+
+        // Get selector element to add options to
+        const selector = document.getElementById('JIPSelector');
+
+        // If it doesn't exist yet, skip
+        if (selector === null) {
+          return;
+        }
 
         // Request the list of available JIP files to the user from the server
           const response = await fetch('/JIPipeRunner/list_jipipe_files/', { credentials: 'same-origin' });
 
           // If the response is not OK, throw an error with the status code
           if (!response.ok) {
-            throw new Error(`Failed to fetch JIP files: ${response.status}`);
+            const errorText = await response.json();
+            throw new Error(`Failed to fetch JIP files: ${errorText.error}`);
           }
 
           // If the response is OK, parse the JSON response to populate the selector dropdown accordingly
           const { files } = await response.json();
-          const selector = document.getElementById('JIPSelector');
           files.forEach(file => {
             const option = document.createElement('option');
             option.value = file.file_id;
@@ -847,18 +915,19 @@
             }
           });
         }
-        
+      
       // Initialization: fetch config and render UI
       try {
         // Load the running jobs and available .jip files
         loadRunningJobs();
-        setInterval(loadRunningJobs, 2000);  // TODO: Make this a real-time SSE connection in the future
+        setInterval(loadRunningJobs, 5000);  // TODO: Make this a real-time SSE connection in the future
         listAvailableJIPFiles();
 
         // EventListener: On click of the start button, execute the pipeline job
         document.getElementById('startRunnerBtn').addEventListener('click', event => {
             event.preventDefault();
-            executePipelineJob();
+            let job_parameter_override = createJobPipelineParametersOverride();
+            executePipelineJob(job_parameter_override);
           });
         
         // EventListener: On change of the .jip file selector, fetch the selected .jip file content and update the UI accordingly
@@ -869,6 +938,9 @@
 
             // Update the global variable for the selected JIP file name
             jip_file_name = event.target.options[event.target.selectedIndex].text;
+
+            // Reset the global parameter override to be refilled
+            jip_file_parameter_overrides = {};
 
             // If a .jip file is selected, fetch its content and update the UI
             if (selectedJipFileID) {
@@ -895,9 +967,18 @@
             // If no .jip file is selected, reset the info sections to their original empty state
             } else {
               document.getElementById('jipipe_info_input_sections').innerHTML = originalInfoState;
+
+              // Set output display according to "Enable output config" checkbox
+              if (document.getElementById("enableOutputConfig").checked){
+                document.getElementById("output").style.display = "block"
+              }
+              else{
+                document.getElementById("output").style.display = "none"
+              }
             }
           });
         
+        // EventListener: On change of the "Enable output config" checkbox, show or hide the output section accordingly
         document.getElementById('enableOutputConfig').addEventListener('change', (event) => {
           const outputSection = document.getElementById('output');
           if (event.target.checked) {
