@@ -74,23 +74,23 @@ omero.web.caches = {
 
 ## User guide
 
-After the installation is completed, you can login to your OMERO server. If the installation was successful, you should see a tab called ***JIPipeRunner*** in the right panel. 
+After the installation is completed, you can login to your OMERO server. If the installation was successful, you should see a tab called **JIPipeRunner** in the right panel. 
 
 <p align="center">
   <img src="./assets/images/TabPanel.png"/>
 </p>
 
-After [getting started](#getting-started), check the remaining entries of the user guide to learn about the different sections within the plugin.
+Below you will find a detailed explanation for all sections displayed within the plugin.
 
-### Getting started
+### FILE SELECTION
 
-The plugin will load its content depending on the .jip file you select at the top of the configuration:
+The plugin will load its content depending on the .jip file you select at the top of this section. When checking **Enable output config**, the [output node configuration](#output-node-configuration) will be accessible.
 
 <p align="center">
-  <img src="./assets/images/JipSelector.png"/>
+  <img src="./assets/images/FileSelectionSection.png"/>
 </p>
 
-JIPipeRunner will automatically offer you all .jip files as an option that are attached projects that you own or are a member of. To start using the plugin properly, you first need to have at least one .jip file attached to one of these projects. To do so, go to <b>General → Attachments</b> in the right panel of any of your projects. Click the <b>+</b> to attach a .jip file that adheres to the <a href="#pipeline-design-constraints">pipeline design constraints</a>. You can choose to upload a local file or use an already existing one on the server.
+JIPipeRunner will automatically offer you all .jip files as an option that are accessible by your OMERO groups. If you have none available, you can upload files as attachments to any of your projects or datasets. To do so, select a dataset or project and go to <b>General → Attachments</b> in the right panel. Click the <b>+</b> to attach a .jip file. To ensure compatibility, be sure that it adheres to the <a href="#pipeline-design-constraints">pipeline design constraints</a>.
 
 <p align="center">
   <img src="./assets/images/Attach_JIP_File.png"/>
@@ -99,7 +99,7 @@ JIPipeRunner will automatically offer you all .jip files as an option that are a
 
 ### RUNNING JOBS
 
-In this section you will find a list of all the JIPipe jobs currently running on the server that were initiated by the current user. By clicking the red ✖ next to the job UID you can terminate the associated job.
+In this section you will find a list of all the JIPipe jobs currently running on the server that were initiated by the current user. They can be identified by the time and date of execution and the name of the associated .jip file. By clicking the red ✖ next to the entry you can terminate the associated job.
 
 ![Job section](./assets/images/RunningJobsSection.png)
 
@@ -115,11 +115,17 @@ If the JIPipe pipeline follows the [pipeline design constraints](#pipeline-desig
 
 ![Input node config section](./assets/images/InputNodeConfigSection.png)
 
+### OUTPUT NODE CONFIGURATION
+
+When checking **Enable output config** in the [file selection](#file-selection), the output configuration becomes available. Here you can choose a pre-existing project you want to save the output dataset to and give the dataset a custom name. The name can be entered in plain text when unchecking **Input as expression**, otherwise an [expression as described in the JIPipe documentation](https://jipipe.hki-jena.de/documentation/expressions.html) can be entered. 
+
+![Output node config section](./assets/images/OutputConfigSection.png)
+
 ### PARAMETER CONFIGURATION
 
 This section contains the input fields of the parameters that are defined as reference parameters within the .jip file. Depending on the node and parameter type that is referenced, the input fields accept integers, floats or strings as input. When hovering the **?** the plugin will display a tooltip with the description of the respective parameter (if it was set in the [project overview](https://jipipe.hki-jena.de/documentation/project-overview.html)).
 
-Below this section you will find the ***Start JIPipeRunner*** button to execute the selected .jip file.
+Below this section you will find the **Start JIPipeRunner** button to execute the selected .jip file.
 
 ![Parameter config section](./assets/images/ParameterConfigSection.png)
 
@@ -154,7 +160,9 @@ To prevent the display of all possible node parameters of a pipeline within the 
 
 ### Output nodes
 
-When executed, JIPipeRunner will automatically create a new project within the OMERO database called "JIPipeResults" or use a pre-existing project with the same name. For a pipeline to store its results in a dataset within that project, it is crucial that the output that should be stored in OMERO is connected to the following node structure within the pipeline: 
+When executed with an unchecked **Enable output config**, JIPipeRunner will automatically create a new project within the OMERO database called "JIPipeResults" or use a pre-existing project with the same name. Otherwise, the user input in the [output node configuration section](#output-node-configuration) will be used.
+
+For a pipeline to store its results in a dataset within a project, it is crucial that the output that should be stored in OMERO is connected to the following node structure within the pipeline: 
 
 <p align="center">
   <img src="./assets/images/OutputStructure.png" style="height:300px"/>
