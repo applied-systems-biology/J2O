@@ -269,27 +269,27 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
     param conn: OMERO connection object (optional, used for user context)
     """
     try:
-        orig_gid = conn.SERVICE_OPTS.getOmeroGroup()
+        original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
         groups = conn.listGroups()
 
         # Keep track of which file IDs we’ve already seen
         seen_file_ids = set()
 
-        # Prepare a Python list to hold {fileID:…, fileName:…} dicts
-        all_annotations = []
+        # Prepare a Python list to hold {fileID:…, fileName:…} dicts for .jip annotations
+        all_jip_annotations = []
 
         # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
-        for grp in groups:
+        for group in groups:
             # Set the session’s “active group” to gid
-            conn.SERVICE_OPTS.setOmeroGroup(grp.id)
+            conn.SERVICE_OPTS.setOmeroGroup(group.id)
 
             # Retrieve all FileAnnotation objects visible in this group
             # (returns a list of OMERO‐wrappers for FileAnnotation)
-            fas = conn.getObjects("FileAnnotation")
-            for fa in fas:
+            file_annotations = conn.getObjects("FileAnnotation")
+            for file_annotation in file_annotations:
 
                 # Extract the numeric ID and the original filename
-                file_id = fa.getFile().getId()
+                file_id = file_annotation.getFile().getId()
 
                 # Skip if we've already added this file_id
                 if file_id in seen_file_ids:
@@ -297,13 +297,14 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
                 seen_file_ids.add(file_id)
 
                 # The FileAnnotation wrapper has a .getFile() method returning a FileI
-                file_name = fa.getFile().getName()
-                all_annotations.append({
-                    'file_id': file_id,
-                    'file_name': file_name
+                file_name = file_annotation.getFile().getName()
+                if file_name.endswith(".jip"):
+                    all_jip_annotations.append({
+                        'file_id': file_id,
+                        'file_name': file_name
                 })
 
-        return JsonResponse({'files': all_annotations})
+        return JsonResponse({'files': all_jip_annotations})
     
     except Exception as e:
         # log the full stack trace so you can see what went wrong
@@ -314,7 +315,7 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
         )
     
     finally:
-        conn.SERVICE_OPTS.setOmeroGroup(orig_gid)
+        conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
 
 # Helper: ensure the results project exists
 def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:

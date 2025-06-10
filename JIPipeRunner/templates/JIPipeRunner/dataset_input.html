@@ -903,12 +903,10 @@
           // If the response is OK, parse the JSON response to populate the selector dropdown accordingly
           const { files } = await response.json();
           files.forEach(file => {
-            if(file.file_name.endsWith(".jip")){
               const option = document.createElement('option');
               option.value = file.file_id;
               option.textContent = file.file_name;
               selector.appendChild(option);
-            }
           });
 
           // Add an event listener to the selector to enable the start button when a file is selected and disable it when no file is selected
