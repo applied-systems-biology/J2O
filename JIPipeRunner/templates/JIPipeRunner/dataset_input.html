@@ -51,7 +51,7 @@
       border: 1px solid var(--color-border);
       border-radius: 6px;
       margin-bottom: var(--space-lg);
-      padding: var(--space-md);
+      padding: var(--space-md) var(--space-md) var(--space-sm);
     }
 
     #jipipe_form_container h1 {
@@ -112,7 +112,6 @@
       margin: 0 auto var(--space-lg);
       padding: var(--space-sm) var(--space-md);
       text-align: center;
-      transition: background-color 0.2s ease-in-out;
     }
 
     #jipipe_form_container #startRunnerBtn:hover {
@@ -350,6 +349,8 @@
       </div>
     </section>
 
+    <div id="buffer_div" style="display: none">This is just for hiding content load of jipipe_info_input_sections</div>
+
     <!--- Licensing -->
     <div style="font-size: 0.75rem; text-align: center; margin-top: 2rem;">
       JIPipeRunner by Marius Wank, licensed under 
@@ -415,6 +416,13 @@
 
         // If the response is OK, get the job infos
         const { job_infos } = await resp.json();
+        
+        // If there are no current jobs, display message and return
+        if (job_infos.length === 0){
+          job_list.innerHTML = '<p>Currently no running jobs</p>';
+          return;
+        }
+
         // Clear the current list in DOM and memory
         job_list.innerHTML = '';
         activeJobs.clear();
@@ -430,7 +438,6 @@
       /**
        * Add the job entry and a cancel button to the "Running Jobs" section.
        * @param {string} jobId - The ID of the job to add
-       * @see removeRunningJob for removing the job-reference from the cache and updating the "Running Jobs" section.
        * @see stopPipelineJob for stopping the job on the server.
        */
       function addRunningJob(jobId, name, start_time) {
@@ -456,26 +463,12 @@
         const btn = job_list_item.querySelector('.cancel-btn');
         btn.addEventListener('click', () => {
           if (confirm(`Are you sure you want to cancel job ${jobId}?`)) {
-            removeRunningJob(jobId);
             stopPipelineJob(jobId);
           }
         });
 
         // Append the job list item to the running jobs list
         job_list.appendChild(job_list_item);
-      }
-      
-      /**
-       * Remove the given job-reference from the active jobs cache and update the "Running Jobs" section UI.
-       * @param {string} jobId - The ID of the job to remove
-       */
-      function removeRunningJob(jobId) {
-        // Remove the job reference from the active jobs set
-        activeJobs.delete(jobId);
-
-        // Find the job list item in the running jobs section and remove it from the DOM
-        const el = document.getElementById(`job-${jobId}`);
-        if (el) el.remove();
       }
       
       /**
@@ -498,9 +491,7 @@
        * Display a summary of the nodes in the chosen .jip file in the "Node Summary" section.
        * @param {Object} nodesMap - The map of nodes in the pipeline configuration
        */
-      function displayNodeSummary(nodesMap) {
-        // Get the container for the node summary and calculate counts
-        const container = document.getElementById('file_info');
+      function displayNodeSummary(nodesMap, container) {
 
         // Filter nodes to count total, input, and output nodes according to pipeline conventions
         const allNodes = Object.values(nodesMap);
@@ -515,9 +506,7 @@
        * Create input fields for dataset IDs based on the input nodes in the given .jip file nodeMap.
        * @param {Object} nodesMap - The map of nodes in the selected .jip file
        */
-      async function createDatasetInputFields(nodesMap) {
-        // Get the container for input fields
-        const container = document.getElementById('input');
+      async function createDatasetInputFields(nodesMap, container) {
 
         // Request all available datasets that can be used as input from the server
         const response = await fetch('/JIPipeRunner/list_available_datasets/', { credentials: 'same-origin' });
@@ -610,9 +599,7 @@
        * @param {Object} nodesMap - The map of nodes in the selected .jip file
        * @param {Object} graphEdges - The edges of the graph in the .jip file
        */
-      async function createOutputProjectInputFields(nodesMap, graphEdges) {
-        // Get the container for input fields
-        const container = document.getElementById('output');
+      async function createOutputProjectInputFields(nodesMap, graphEdges, container) {
         
         // Set output display according to "Enable output config" checkbox
         if (document.getElementById("enableOutputConfig").checked){
@@ -740,10 +727,7 @@
        * @param {Object} paramsMetadata - The metadata containing parameter definitions
        * @param {Object} nodesMap - The map of nodes in the selected .jip file
        */
-      function createParameterFields(paramsMetadata, nodesMap) {
-
-        // Get the container for parameter fields
-        const container = document.getElementById('parameters');
+      function createParameterFields(paramsMetadata, nodesMap, container) {
 
         // iterate the content of all exported reference parameters
         const exported_reference_parameters = paramsMetadata['exported-parameters']['parameter-reference-groups'];
@@ -811,6 +795,7 @@
           }
           // If the request was successful, display message in the log output
           logOutput.textContent += `\nCanceling job ${jobId}`;
+          loadRunningJobs();
         } catch (err) {
           console.error('Error while calling stop_jipipe_job:', err);
         }
@@ -930,11 +915,11 @@
 
         // Get the response to add the job to the UI 
         const { job_id: jobId, job_name: name, job_start_time: start_time } = await response.json();
-        addRunningJob(jobId, name, start_time);
+        loadRunningJobs();
 
         // Wait for the log output to finish before removing the job from the UI (Log checks for finished status of job)
         await updateLogWindow(jobId);
-        removeRunningJob(jobId);
+        loadRunningJobs();
       }
 
       /**
@@ -1024,22 +1009,14 @@
               option.textContent = file.file_name;
               selector.appendChild(option);
           });
-
-          // Add an event listener to the selector to enable the start button when a file is selected and disable it when no file is selected
-          selector.addEventListener('change', () => {
-            if (selector.value) {
-              document.getElementById('startRunnerBtn').disabled = false;
-            } else {
-              document.getElementById('startRunnerBtn').disabled = true;
-            }
-          });
         }
       
       // Initialization: fetch config and render UI
       try {
         // Load the running jobs and available .jip files
+        document.getElementById('jipipe_info_input_sections').style.display = "none";
         loadRunningJobs();
-        setInterval(loadRunningJobs, 5000);  // TODO: Make this a real-time SSE connection in the future
+        setInterval(loadRunningJobs, 30000);  // TODO: Make this a real-time SSE connection in the future
         listAvailableJIPFiles();
 
         // EventListener: On click of the start button, execute the pipeline job
@@ -1047,6 +1024,7 @@
             event.preventDefault();
             let job_parameter_override = createJobPipelineParametersOverride();
             executePipelineJob(job_parameter_override);
+            loadRunningJobs();
           });
         
         // EventListener: On change of the .jip file selector, fetch the selected .jip file content and update the UI accordingly
@@ -1061,21 +1039,37 @@
             // Reset the global parameter override to be refilled
             jip_file_parameter_overrides = {};
 
+            
+            const infoSection = document.getElementById('jipipe_info_input_sections');
+            const buffer_div = document.getElementById("buffer_div");
+            const startRunnerBtn= document.getElementById('startRunnerBtn');
+
             // If a .jip file is selected, fetch its content and update the UI
             if (selectedJipFileID) {
               try { 
 
-                // Return info sections to their original empty state
-                document.getElementById('jipipe_info_input_sections').innerHTML = originalInfoState;
+                // Use the invisible buffer div to initialize content
+                buffer_div.innerHTML = originalInfoState;
 
-                // Fetch the .jip file content and update the info sections with node summary, input fields, and parameter fields
+                // Replace the working DOM reference to use the temp container for construction
+                const tempFileInfo = buffer_div.querySelector('#file_info');
+                const tempInput = buffer_div.querySelector('#input');
+                const tempOutput = buffer_div.querySelector('#output');
+                const tempParams = buffer_div.querySelector('#parameters');
+
+                // Fetch the .jip file content and update the buffer div with node summary, input fields, and parameter fields
                 jip_file_content = await fetchPipelineConfig(selectedJipFileID);
                 const nodesMap = jip_file_content.graph.nodes;
                 const graphEdges = jip_file_content.graph.edges;
-                displayNodeSummary(nodesMap);
-                createDatasetInputFields(nodesMap);
-                createOutputProjectInputFields(nodesMap, graphEdges);
-                createParameterFields(jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters'], nodesMap);
+                await createDatasetInputFields(nodesMap, tempInput);
+                displayNodeSummary(nodesMap, tempFileInfo);
+                createParameterFields(jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters'], nodesMap, tempParams);
+                await createOutputProjectInputFields(nodesMap, graphEdges, tempOutput);
+
+                // Activate elements after loading is done
+                startRunnerBtn.disabled = false;
+                infoSection.replaceChildren(...buffer_div.childNodes);  // Replace the visible infoSection with the content of the buffer div
+                infoSection.style.display = "block";
 
               // If an error occurs while fetching the .jip file content, display an error message in the file info section
               } catch (error) {
@@ -1085,15 +1079,17 @@
 
             // If no .jip file is selected, reset the info sections to their original empty state
             } else {
-              document.getElementById('jipipe_info_input_sections').innerHTML = originalInfoState;
+              startRunnerBtn.disabled = true;
+              infoSection.innerHTML = originalInfoState;
+              infoSection.style.display = "none";
+            }
 
-              // Set output display according to "Enable output config" checkbox
-              if (document.getElementById("enableOutputConfig").checked){
-                document.getElementById("output").style.display = "block"
-              }
-              else{
-                document.getElementById("output").style.display = "none"
-              }
+            // Set output display according to "Enable output config" checkbox
+            if (document.getElementById("enableOutputConfig").checked){
+              document.getElementById("output").style.display = "block"
+            }
+            else{
+              document.getElementById("output").style.display = "none"
             }
           });
         
