@@ -490,9 +490,20 @@
        * Create input fields for dataset IDs based on the input nodes in the given .jip file nodeMap.
        * @param {Object} nodesMap - The map of nodes in the selected .jip file
        */
-      function createDatasetInputFields(nodesMap) {
+      async function createDatasetInputFields(nodesMap) {
         // Get the container for input fields
         const container = document.getElementById('input');
+
+        // Request all available datasets that can be used as input from the server
+        const response = await fetch('/JIPipeRunner/list_available_datasets/', { credentials: 'same-origin' });
+
+        if (!response.ok) {
+            const errorText = await response.json();
+            throw new Error(`Failed to fetch available datasets: ${errorText.error}`);
+        }
+
+        // Save the available_datasets JSON response to use it later
+        const { available_datasets } = await response.json();
 
         // Iterate over the nodes and create input fields for those with 'define-dataset-ids' alias (input nodes according to JIPRunner convention)
         Object.entries(nodesMap).forEach(([uuid, node]) => {
@@ -507,19 +518,64 @@
             // Get the value from the .jip file if available, or use an empty string as a placeholder
             const existingIds = (node['dataset-ids'] || []).join(', ');
 
+            // Create the parameter override key
             jip_file_parameter_overrides[inputId] = existingIds;
 
-            // Construct the input field with a label and placeholder
-            row.innerHTML = `
-              <label for="${inputId}">${node['jipipe:node:name']}:</label>
-              <input type="text"
-                     id="${inputId}"
-                     name="${node['jipipe:node:name']}"
-                     placeholder="${existingIds}">
-              `;
+            // Create a label and select element for the Dataset IDs input field
+            const label = document.createElement('label');
+            label.htmlFor = inputId;
+            label.textContent = node['jipipe:node:name'];
 
-            // Append the row to the input fields container
+            const selector = document.createElement('select');
+            selector.id = inputId;
+            selector.multiple = true;
+            selector.placeholder = existingIds;
+
+            // Map the entries from the available datasets from the server to have them as input for TomSelect
+            const items = available_datasets.map(dataset => ({
+            value: dataset.dataset_id,
+            name: dataset.dataset_name
+            }));
+
+            // Attach the elements to DOM
+            row.appendChild(label);
+            row.appendChild(selector);
             container.appendChild(row);
+
+            // Transform the select element to a TomSelect field
+            transformSelectElementToTomSelect(select_element_id=inputId, option_items=items, placeholder_value=existingIds);
+          }
+        });
+      }
+
+      /**
+       * Helper function that transform the select element with the given ID into a TomSelect element.
+       * @param {string} select_element_id - The ID of the select element to transform.
+       * @param {map} option_items - Map that contains the value and name of the options. Those are used to display the options.
+       * @param {string} placeholder_value - A placeholder value that will be displayed if nothing is selected yet. Will be used as a default value when execution starts.
+      */
+      function transformSelectElementToTomSelect(select_element_id, option_items, placeholder_value){
+
+        new TomSelect(`#${CSS.escape(select_element_id)}`, {
+          options: option_items,
+          plugins: ['remove_button'],
+          valueField: 'value',
+          labelField: 'name',
+          searchField: ['name'],
+          create: false,
+          placeholder: placeholder_value,
+          hidePlaceholder: true,
+          onItemAdd: function () {
+            this.setTextboxValue('');
+            this.refreshOptions();
+          },
+          render: {
+            option: function (data, escape) {
+              return `<div class="d-flex"><span>ID ${escape(data.value)}: ${escape(data.name)}</span></div>`;
+            },
+            item: function (data, escape) {
+              return `<div>${escape(data.value)}</div>`;
+            }
           }
         });
       }
@@ -529,7 +585,7 @@
        * @param {Object} nodesMap - The map of nodes in the selected .jip file
        * @param {Object} graphEdges - The edges of the graph in the .jip file
        */
-      function createOutputProjectInputFields(nodesMap, graphEdges) {
+      async function createOutputProjectInputFields(nodesMap, graphEdges) {
         // Get the container for input fields
         const container = document.getElementById('output');
         
@@ -540,6 +596,17 @@
         else{
           container.style.display = "none"
         }
+
+        // Request all available projects that can be used as input from the server
+        const response = await fetch('/JIPipeRunner/list_available_projects/', { credentials: 'same-origin' });
+
+        if (!response.ok) {
+            const errorText = await response.json();
+            throw new Error(`Failed to fetch available projects: ${errorText.error}`);
+        }
+
+        // Save the available_projects JSON response to use it later
+        const { available_projects } = await response.json();
 
         // Iterate over the nodes and create input fields for those with 'define-dataset-ids' alias (input nodes according to JIPRunner convention)
         Object.entries(nodesMap).forEach(([uuid, node]) => {
@@ -558,14 +625,25 @@
             // Get the value from the .jip file if available, or use an empty string as a placeholder
             const existingIds = (node['dataset-ids'] || []).join(', ');
 
-            // Construct the input field with a label and placeholder
-            row.innerHTML += `
-              <label for="${inputId}">${node['jipipe:node:name']}:</label>
-              <input type="text"
-                     id="${inputId}"
-                     name="${node['jipipe:node:name']}"
-                     placeholder="${existingIds}">
-              `;
+            // Create a label and select element for the Project IDs input field
+            const label = document.createElement('label');
+            label.htmlFor = inputId;
+            label.textContent = node['jipipe:node:name'];
+
+            const selector = document.createElement('select');
+            selector.id = inputId;
+            selector.multiple = true;
+            selector.placeholder = existingIds;
+
+            // Map the entries from the available projects from the server to have them as input for TomSelect
+            const items = available_projects.map(project => ({
+            value: project.project_id,
+            name: project.project_name
+            }));
+
+            // Attach the elements to DOM
+            row.appendChild(label);
+            row.appendChild(selector);
 
             // Get child node ID via graphEdges to also configure the output dataset name
             Object.entries(graphEdges).forEach(([_, edge]) => {
@@ -621,6 +699,11 @@
             // Append the row to the input fields container if the node is connected to any other nodes
             if (connected){
               container.appendChild(row);
+
+              // Transform the select element to a TomSelect element
+              transformSelectElementToTomSelect(select_element_id=inputId, option_items=items, placeholder_value=existingIds)
+
+              // Create the parameter override key for the Project IDs
               jip_file_parameter_overrides[inputId] = existingIds;
             }            
           }
@@ -755,10 +838,18 @@
         // Iterate the parameter_override dict to change the values according to user input
         Object.entries(job_parameter_override).forEach(([key, _]) => {
 
+          let inputValue = "0";
           // Reference the input element associated with the key to get its value
           const inputElement = document.getElementById(`${key}`);
-          const inputValue = inputElement.value !== "" ? inputElement.value : inputElement.placeholder;
+          if (inputElement.tagName === 'SELECT' && inputElement.multiple){
+            const inputValueArray = Array.from(inputElement.selectedOptions).map(option => option.value);
+            inputValue = inputValueArray.length != 0 ? inputValueArray.join(', ') : inputElement.placeholder
+          }
+          else {
+            inputValue = inputElement.value !== "" ? inputElement.value : inputElement.placeholder;
+          }
           const finalValue = transformToJIPipeCompatibleValue(inputValue, key);
+          console.log(finalValue);
 
           // Overwrite the entry with the JIPipe compatible value 
           job_parameter_override[key] = finalValue;

@@ -317,6 +317,123 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
     finally:
         conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
 
+@login_required()
+def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
+    """
+    Lists all datasets associated with projects in 
+    all OMERO groups of the current user. 
+    Returns a JSON response with dataset_id and dataset_name.
+
+    URL: JIPipeRunner/list_available_datasets/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
+    """
+    try:
+        original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
+        groups = conn.listGroups()
+
+        # Keep track of which file IDs we’ve already seen
+        seen_dataset_ids = set()
+
+        # Prepare a Python list to hold {fileID:…, fileName:…} dicts for .jip annotations
+        all_available_datasets = []
+
+        # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
+        for group in groups:
+            # Set the session’s “active group” to gid
+            conn.SERVICE_OPTS.setOmeroGroup(group.id)
+
+            # Retrieve all FileAnnotation objects visible in this group
+            # (returns a list of OMERO‐wrappers for FileAnnotation)
+            datasets = conn.getObjects("Dataset")
+            for dataset in datasets:
+
+                # Extract the numeric ID and the original filename
+                dataset_id = dataset.getId()
+
+                # Skip if we've already added this file_id
+                if dataset_id in seen_dataset_ids:
+                    continue
+                seen_dataset_ids.add(dataset_id)
+
+                # The FileAnnotation wrapper has a .getFile() method returning a FileI
+                dataset_name = dataset.getName()
+                all_available_datasets.append({
+                    'dataset_id': dataset_id,
+                    'dataset_name': dataset_name
+                })
+
+        return JsonResponse({'available_datasets': all_available_datasets})
+    
+    except Exception as e:
+        # log the full stack trace so you can see what went wrong
+        logger.exception("Failed to list available datasets")
+        return JsonResponse(
+            {'error': f'Internal server error listing available datasets: {e}'},
+            status=500
+        )
+    
+    finally:
+        conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
+
+@login_required()
+def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
+    """
+    Lists all projects in all OMERO groups of the current user. 
+    Returns a JSON response with project_id and project_name.
+
+    URL: JIPipeRunner/list_available_projects/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
+    """
+    try:
+        original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
+        groups = conn.listGroups()
+
+        # Keep track of which file IDs we’ve already seen
+        seen_project_ids = set()
+
+        # Prepare a Python list to hold {fileID:…, fileName:…} dicts for .jip annotations
+        all_available_projects = []
+
+        # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
+        for group in groups:
+            # Set the session’s “active group” to gid
+            conn.SERVICE_OPTS.setOmeroGroup(group.id)
+
+            # Retrieve all FileAnnotation objects visible in this group
+            # (returns a list of OMERO‐wrappers for FileAnnotation)
+            projects = conn.getObjects("Project")
+            for project in projects:
+
+                # Extract the numeric ID and the original filename
+                project_id = project.getId()
+
+                # Skip if we've already added this file_id
+                if project_id in seen_project_ids:
+                    continue
+                seen_project_ids.add(project_id)
+
+                # The FileAnnotation wrapper has a .getFile() method returning a FileI
+                project_name = project.getName()
+                all_available_projects.append({
+                    'project_id': project_id,
+                    'project_name': project_name
+                })
+
+        return JsonResponse({'available_projects': all_available_projects})
+    
+    except Exception as e:
+        # log the full stack trace so you can see what went wrong
+        logger.exception("Failed to list available projects")
+        return JsonResponse(
+            {'error': f'Internal server error listing available projects: {e}'},
+            status=500
+        )
+    
+    finally:
+        conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
+
 # Helper: ensure the results project exists
 def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
     """
