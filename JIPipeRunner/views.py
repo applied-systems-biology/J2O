@@ -5,6 +5,7 @@ import os
 import signal
 import uuid
 from typing import Optional
+import traceback
 
 from django.conf import settings
 from django.core.cache import cache
@@ -59,61 +60,63 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     try:
         inspector = app.control.inspect()
         ping_response = inspector.ping() or {}
-    except Exception:
-        ping_response = {}
 
-    # If no worker replies, don't start job
-    if not ping_response:
-        return JsonResponse({'error': 'Could not start job. No Celery workers are currently running.'}, status=503)
+        # If no worker replies, don't start job
+        if not ping_response:
+            return JsonResponse({'error': 'Could not start job. No Celery workers are currently running.'}, status=503)
 
-    # Parse the incoming configuration
-    json_request = json.loads(request.body.decode('utf-8'))
-    jipipe_json = json_request.get('jip_content')
-    parameter_override_json = json_request.get('jip_parameter_overrides', {})
-    jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
-    custom_output_config_enabled = json_request.get('custom_output_config_enabled', False)
+        # Parse the incoming configuration
+        json_request = json.loads(request.body.decode('utf-8'))
+        jipipe_json = json_request.get('jip_content')
+        parameter_override_json = json_request.get('jip_parameter_overrides', {})
+        jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
+        custom_output_config_enabled = json_request.get('custom_output_config_enabled', False)
 
-    # TODO: Validate the JIPipe JSON structure here for security and correctness
+        # TODO: Validate the JIPipe JSON structure here for security and correctness
 
-    if not custom_output_config_enabled:
-        # Ensure there is a JIPipeResults project to store outputs
-        results_project = _get_or_create_results_project(conn)
-        results_project_id = int(results_project.getId())
+        if not custom_output_config_enabled:
+            # Ensure there is a JIPipeResults project to store outputs
+            results_project = _get_or_create_results_project(conn)
+            results_project_id = int(results_project.getId())
 
-        # Assign dataset IDs of target output dataset to the define-project-ids nodes to save outputs to
-        for node in jipipe_json.get('graph', {}).get('nodes', {}).values():
-            node_alias_id = node.get('jipipe:alias-id', '').lower()
-            if 'define-project-ids' in node_alias_id:
-                node['dataset-ids'] = [results_project_id]
+            # Assign dataset IDs of target output dataset to the define-project-ids nodes to save outputs to
+            for node in jipipe_json.get('graph', {}).get('nodes', {}).values():
+                node_alias_id = node.get('jipipe:alias-id', '').lower()
+                if 'define-project-ids' in node_alias_id:
+                    node['dataset-ids'] = [results_project_id]
 
-    # Prepare the log file path and unique job identifier to reference the job later on
-    job_uuid = uuid.uuid4().hex
-    log_file = os.path.join(LOG_DIR, f'{job_uuid}.log')
+        # Prepare the log file path and unique job identifier to reference the job later on
+        job_uuid = uuid.uuid4().hex
+        log_file = os.path.join(LOG_DIR, f'{job_uuid}.log')
 
-    # Collect job information to store in the cache
-    job_info = {
-    "job_uuid": job_uuid,
-    "name": jip_file_name,
-    "start_time": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-    "log_file_path": log_file
-    }
+        # Collect job information to store in the cache
+        job_info = {
+        "job_uuid": job_uuid,
+        "name": jip_file_name,
+        "start_time": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+        "log_file_path": log_file
+        }
 
-    # Update the cache to track active jobs for the user
-    owner = conn.getUser().getName()
-    logger.info(f"Starting JIPipe job for user {owner} with job ID {job_uuid}")
-    user_key = f"active_jipipe_jobs_{owner}"
-    active = cache.get(user_key, [])
-    active.append(job_info)
-    cache.set(user_key, active, timeout=CACHE_TIMEOUT)
+        # Update the cache to track active jobs for the user
+        owner = conn.getUser().getName()
+        logger.info(f"Starting JIPipe job for user {owner} with job ID {job_uuid}")
+        user_key = f"active_jipipe_jobs_{owner}"
+        active = cache.get(user_key, [])
+        active.append(job_info)
+        cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-    # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
-    run_jipipe_task.apply_async(
-        args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file],
-        task_id=job_uuid,
-        ignore_result=True,
-    )
+        # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
+        run_jipipe_task.apply_async(
+            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file],
+            task_id=job_uuid,
+            ignore_result=True,
+        )
+        return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': datetime.now().strftime('%d-%m-%Y %H:%M:%S')})
+    
+    except Exception as e:
+        logger.exception("Exception while starting JIPipe job")
+        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=500)
 
-    return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': datetime.now().strftime('%d-%m-%Y %H:%M:%S')})
 
 @require_POST
 @login_required()
