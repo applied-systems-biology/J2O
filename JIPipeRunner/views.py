@@ -117,6 +117,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         logger.exception("Exception while starting JIPipe job")
         return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=500)
 
+
 @require_POST
 @login_required()
 def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
@@ -452,14 +453,11 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
     existing_results_project = conn.getObject('Project', attributes={'name': project_name})
     if existing_results_project:
         return existing_results_project
-    
-    group_id = conn.SERVICE_OPTS.getOmeroGroup()
-    
+
     # Create a new Project with the specified name if it does not exist
     new_project_model = omero.model.ProjectI()
     new_project_model.setName(rstring(project_name))
     new_project_model.setDescription(rstring('Project to save all JIPipe results'))
-    new_project_model.setGroup(omero.model.GroupI(group_id))
     saved_model = conn.getUpdateService().saveAndReturnObject(
         new_project_model,
         conn.SERVICE_OPTS,
