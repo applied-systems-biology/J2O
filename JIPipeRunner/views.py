@@ -449,6 +449,11 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
     # Define the project name to look for or create
     project_name = 'JIPipeResults'
 
+    # Set a group to save
+    original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
+    groups = list(conn.listGroups())
+    conn.SERVICE_OPTS.setOmeroGroup(groups[0].id)
+
     # Attempt to find an existing project
     existing_results_project = conn.getObject('Project', attributes={'name': project_name})
     if existing_results_project:
@@ -462,6 +467,8 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
         new_project_model,
         conn.SERVICE_OPTS,
     )
+
+    conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
 
     # Get the ID of the newly created project and return the Project object
     new_id = saved_model.getId().getValue()
