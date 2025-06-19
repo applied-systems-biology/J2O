@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 import logging
 import os
+from queue import Full
 import signal
 import uuid
 from typing import Optional
@@ -30,7 +31,7 @@ os.makedirs(LOG_DIR, exist_ok=True)
 # Time (in seconds) to keep PIDs in cache before expiring (None == never expire)
 CACHE_TIMEOUT: Optional[int] = None
 
-# Intialize the logger
+# Initialize the logger
 logger = logging.getLogger(__name__)
 
 @login_required()
@@ -117,7 +118,6 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         logger.exception("Exception while starting JIPipe job")
         return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=500)
 
-
 @require_POST
 @login_required()
 def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
@@ -176,6 +176,29 @@ def list_jipipe_jobs(request, conn=None, **kwargs):
     user_key = f"active_jipipe_jobs_{owner}"
     active = cache.get(user_key, [])
     return JsonResponse({'job_infos': active})
+
+@require_GET
+@login_required()
+def get_latest_jipipe_job(request, conn=None, **kwargs):
+
+    # Get the current user and their active jobs from cache
+    owner = conn.getUser().getName()
+    user_key = f"active_jipipe_jobs_{owner}"
+    active = cache.get(user_key, [])
+
+    # Get the infos for the latest job
+    latest_job_time = 0.0
+    latest_job_index = -1
+    for job_index, job_info in enumerate(active):
+        start_time_dt = datetime.strptime(job_info["start_time"], '%d-%m-%Y %H:%M:%S')
+        absolute_start_time = int(start_time_dt.timestamp())
+
+        if absolute_start_time > latest_job_time:
+            latest_job_time = absolute_start_time
+            latest_job_index = job_index
+
+    return JsonResponse({'job_id': active[latest_job_index]["job_uuid"]})
+
 
 @require_GET
 @login_required()

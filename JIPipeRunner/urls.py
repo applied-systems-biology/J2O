@@ -11,4 +11,5 @@ urlpatterns = [
     path("list_jipipe_files/", views.list_jipipe_files, name="list_jipipe_files"),
     path("list_available_datasets/", views.list_available_datasets, name="list_available_datasets"),
     path("list_available_projects/", views.list_available_projects, name="list_available_projects"),
+    path("get_latest_jipipe_job/", views.get_latest_jipipe_job, name="get_latest_jipipe_job"),
 ]

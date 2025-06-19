@@ -935,9 +935,28 @@
         let finished = false;
         let previousLogLength = 0;
         let retryCount = 0;
+        let latest_job_id = jobId
 
         // Continue updating the log window until the job is finished
         while (!finished) {
+
+          // Fetch the most recent job and stop updating from this jobs log if it is not the most recent
+          const resp = await fetch('/JIPipeRunner/get_latest_jipipe_job/', {
+            credentials: 'same-origin'
+          });
+          if (!resp.ok) {
+            console.warn('Unable to load latest job:', resp.status);
+            return;
+          }
+
+          // If the response is OK, get the job infos and update latest job id
+          const { job_id: fetched_job_id } = await resp.json();
+          latest_job_id = fetched_job_id
+
+          if (latest_job_id != jobId){
+            break;
+          }
+
           // Send a request to the server to fetch the JIPipe log of the associated job
           const logResp = await fetch(`/JIPipeRunner/fetch_jipipe_logs/${jobId}/`, {
             credentials: 'same-origin'
