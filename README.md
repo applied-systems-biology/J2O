@@ -135,13 +135,13 @@ In this section you will find an overview of the nodes detected in the associate
 
 ### INPUT NODE CONFIGURATION
 
-If the JIPipe pipeline follows the [pipeline design constraints](#pipeline-design-constraints), this section will allow to enter the IDs of the datasets that contain the input images. The input field accepts single integers or a list of integers separated by commas. 
+If the JIPipe pipeline follows the [pipeline design constraints](#pipeline-design-constraints), this section will allow to enter the IDs of the datasets that contain the input images. On clicking the input field, a scrollable dropdown menu will be shown that lists all available datasets according to your OMERO group. You can simply click a listed dataset to add it to the input field. You can also search for a specific dataset by typing its name into the input field. To remove an entry from the input field, click the ✖ next to the ID.
 
 ![Input node config section](./assets/images/InputNodeConfigSection.png)
 
 ### OUTPUT NODE CONFIGURATION
 
-When checking **Enable output config** in the [file selection](#file-selection), the output configuration becomes available. Here you can choose a pre-existing project you want to save the output dataset to and give the dataset a custom name. The name can be entered in plain text when unchecking **Input as expression**, otherwise an [expression as described in the JIPipe documentation](https://jipipe.hki-jena.de/documentation/expressions.html) can be entered. 
+When checking **Enable output config** in the [file selection](#file-selection), the output configuration becomes available. Here you can choose a pre-existing project (the same way as selecting the input dataset ID) that you want to save the generated output dataset to and give the dataset a custom name. The name can be entered in plain text when unchecking **Input as expression**, otherwise an [expression as described in the JIPipe documentation](https://jipipe.hki-jena.de/documentation/expressions.html) can be entered. 
 
 ![Output node config section](./assets/images/OutputConfigSection.png)
 
