@@ -13,8 +13,10 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 from pathlib import Path
 import os
 import json
+import warnings
 from omero.config import ConfigXml
 
+# Try to find the cache location from OMERO config (requires OMERODIR to be set)
 try:
     cfg_file = os.path.join(os.environ["OMERODIR"], "etc", "grid", "config.xml")
     cfg = ConfigXml(cfg_file, read_only=True)
@@ -35,13 +37,19 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = "django-insecure-g1(64x_9_)&--k!^amcpb9a7@n9oqm$2x0q#(x&th@()zqx6hp"
+SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "!!!CHANGE_ME!!!")
+
+if SECRET_KEY == "!!!CHANGE_ME!!!":
+    warnings.warn("WARNING: Using default SECRET_KEY. Set DJANGO_SECRET_KEY for production!")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ["*"]
 
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+SECURE_SSL_REDIRECT = True
 
 # Application definition
 
