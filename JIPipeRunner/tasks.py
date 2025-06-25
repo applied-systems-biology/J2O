@@ -59,6 +59,7 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
             'run', '--project', str(jip_project_file_path),
             '--output-folder', temp_output, 
             '--overwrite-parameters', str(jip_parameter_override_file_path),
+            '--fast-init', 
         ]
         # Run the command and log the output
         with open(jipipe_log_file_path, 'w') as log_file:
