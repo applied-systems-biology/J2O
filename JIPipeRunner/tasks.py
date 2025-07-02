@@ -58,9 +58,14 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
             '--main-class', 'org.hkijena.jipipe.cli.JIPipeCLIMain',
             'run', '--project', str(jip_project_file_path),
             '--output-folder', temp_output, 
-            '--overwrite-parameters', str(jip_parameter_override_file_path),
-            '--fast-init', 
+            '--overwrite-parameters', str(jip_parameter_override_file_path)
         ]
+
+        # Add --fast-init to command if version is supporting it 
+        major_version = int(jipipe_project_config["dependencies"][0]["version"].split(".")[0])
+        if major_version >= 5:
+            command.append('--fast-init')
+
         # Run the command and log the output
         with open(jipipe_log_file_path, 'w') as log_file:
             log_file.write("Executable ImageJ at: " + imagej_path + "\n")
