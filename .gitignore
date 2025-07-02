@@ -6,3 +6,4 @@ JIPipeDatabase
 debug.log
 *.egg-info/
 .idea/
+jcef-bundle
