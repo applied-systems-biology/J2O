@@ -90,6 +90,14 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         job_uuid = uuid.uuid4().hex
         log_file = os.path.join(LOG_DIR, f'{job_uuid}.log')
 
+        # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
+        owner = conn.getUser().getName()
+        run_jipipe_task.apply_async(
+            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file],
+            task_id=job_uuid,
+            ignore_result=True,
+        )
+
         # Collect job information to store in the cache
         job_info = {
         "job_uuid": job_uuid,
@@ -99,19 +107,12 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         }
 
         # Update the cache to track active jobs for the user
-        owner = conn.getUser().getName()
         logger.info(f"Starting JIPipe job for user {owner} with job ID {job_uuid}")
         user_key = f"active_jipipe_jobs_{owner}"
         active = cache.get(user_key, [])
         active.append(job_info)
         cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-        # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
-        run_jipipe_task.apply_async(
-            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file],
-            task_id=job_uuid,
-            ignore_result=True,
-        )
         return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': datetime.now().strftime('%d-%m-%Y %H:%M:%S')})
     
     except Exception as e:
