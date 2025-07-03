@@ -4,6 +4,7 @@ from pathlib import Path
 from django.core.cache import cache
 from omero.config import ConfigXml
 import signal
+import time
 from django.conf import settings
 
 # Turn SIGTERM into KeyboardInterrupt so it can be caught by the task (necessary to shutdown child processes)
@@ -30,6 +31,9 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
     # Create temporary directories for handling input and output
     temp_input = tempfile.mkdtemp()
     temp_output = tempfile.mkdtemp()
+
+    # Create process variable
+    process = None
 
     try:
         # Save the JIPipe project configuration to a file to access it via ImageJ CLI
@@ -90,8 +94,9 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
             log_file.write(f"\n[ JIPipe exited with code {process.returncode} ]\n")
 
     except KeyboardInterrupt:
-        # On receiving SIGTERM terminate the process
-        os.killpg(process.pid, signal.SIGTERM)
+        # On receiving SIGTERM terminate the process if one was defined
+        if process:
+            os.killpg(process.pid, signal.SIGTERM)
         
     except Exception as e:
         # Log any exceptions that occur during the task and throw an exception in OMERO log
@@ -106,5 +111,17 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
         active = cache.get(user_key, [])
         active = [job for job in active if job["job_uuid"] != job_uuid]
         cache.set(user_key, active, timeout=None)
-        shutil.rmtree(temp_input)
-        shutil.rmtree(temp_output)
+        safe_rmtree(temp_input)
+        safe_rmtree(temp_output)
+
+# Helper function that makes the rmtree call more resilient
+def safe_rmtree(path, retries=3, delay=1):
+    for i in range(retries):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as e:
+            if i < retries - 1:
+                time.sleep(delay)
+            else:
+                raise e
