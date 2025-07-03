@@ -373,8 +373,8 @@
       const activeJobs = new Set();  // Set to track currently running jobs
       const csrftoken = getCookieValue('csrftoken');  // CSRF token for secure requests
       const originalInfoState = document.getElementById('jipipe_info_input_sections').innerHTML;  // Store the original state of the info containers
-      const TomSelectDataArchetypes = ["ij.process.AutoThresholder.Method"] // List of all datatypes that should utilize TomSelect
-      const AllowMultipleOptionsDataArchetypes = []  // List of all datatypes that should utilize the TomSelect multiple tag
+      const TomSelectDataArchetypes = ["SingleSelect"] // List of all datatypes that should utilize TomSelect
+      const AllowMultipleOptionsDataArchetypes = []  // List of all data-archetypes that should utilize the TomSelect multiple tag
       
       /**
        * Get the value of a cookie by name
@@ -749,11 +749,14 @@
 
             // Get the default value from the nodeMap if available to use as a placeholder
             const defaultValue = nodesMap[uuid]?.[paramKey] || '';
-            let dataArchetype = null;
+            let refParameterDataType = null;
+            let refParameterArchetype = null;
 
             if (jip_file_major_version >= 6){
-              dataArchetype = jip_file_content["jipipe:doc:parameters"]["types"][entry.path]
-              console.log(dataArchetype)
+              refParameterDataType = jip_file_content["jipipe:doc:parameters"]["types"][entry.path]
+              refParameterArchetype = jip_file_content["jipipe:doc:parameters"]["ref"][refParameterDataType]["archetype"]
+              console.log(refParameterDataType)
+              console.log(refParameterArchetype)
             }
 
             // use UUID of the node to create a unique ID for the input field
@@ -793,7 +796,7 @@
             let items = null;
 
             // Decide based on .jip file version what DOM element to use
-            if (jip_file_major_version >= 6 && TomSelectDataArchetypes.includes(dataArchetype)){
+            if (jip_file_major_version >= 6 && TomSelectDataArchetypes.includes(refParameterArchetype)){
 
               // Create select element to be used with TomSelect
               const selector = document.createElement('select');
@@ -802,12 +805,12 @@
               selector.multiple = false;
 
               // Allow multiple selection for certain parameters
-              if (dataArchetype in AllowMultipleOptionsDataArchetypes){
+              if (AllowMultipleOptionsDataArchetypes.includes(refParameterArchetype)){
                 selector.multiple = true;
               }
 
               // Get list of options from .jip file doc content
-              const allowed_values = jip_file_content["jipipe:doc:parameters"]["ref"][dataArchetype]["allowed-values"];
+              const allowed_values = jip_file_content["jipipe:doc:parameters"]["ref"][refParameterDataType]["allowed-values"];
               items = allowed_values.map(dict => ({
                 value: dict["key"],
                 name: dict["key"]
@@ -829,7 +832,7 @@
             container.appendChild(row);
 
             // Transform the select element to a TomSelect field after adding everything to DOM (no idea why it needs to happen after but it does)
-            if (jip_file_major_version >= 6 && TomSelectDataArchetypes.includes(dataArchetype)){
+            if (jip_file_major_version >= 6 && TomSelectDataArchetypes.includes(refParameterArchetype)){
               transformSelectElementToTomSelect(select_element_id=fieldId, option_items=items, placeholder_value=defaultValue, section="ref-parameter");
               }
           });
@@ -1107,14 +1110,14 @@
         // Load the running jobs and available .jip files
         document.getElementById('jipipe_info_input_sections').style.display = "none";
         loadRunningJobs();
-        setInterval(loadRunningJobs, 30000);  // TODO: Make this a real-time SSE connection in the future
+        setInterval(loadRunningJobs, 5000);  // No better solution since OMERO.web doesn't support WebSockets
         listAvailableJIPFiles();
 
         // EventListener: On click of the start button, execute the pipeline job
-        document.getElementById('startRunnerBtn').addEventListener('click', event => {
+        document.getElementById('startRunnerBtn').addEventListener('click', async (event) => {
             event.preventDefault();
             let job_parameter_override = createJobPipelineParametersOverride();
-            executePipelineJob(job_parameter_override);
+            await executePipelineJob(job_parameter_override);
             loadRunningJobs();
           });
         
