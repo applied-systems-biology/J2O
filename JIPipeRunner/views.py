@@ -88,7 +88,8 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
 
         # Prepare the log file path and unique job identifier to reference the job later on
         job_uuid = uuid.uuid4().hex
-        log_file = os.path.join(LOG_DIR, f'{job_uuid}.log')
+        start_time = datetime.now().strftime('%d-%m-%Y_%H:%M:%S')
+        log_file = os.path.join(LOG_DIR, f'{start_time}_{jip_file_name}_{job_uuid}.log')
 
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
@@ -102,7 +103,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         job_info = {
         "job_uuid": job_uuid,
         "name": jip_file_name,
-        "start_time": datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
+        "start_time": start_time,
         "log_file_path": log_file
         }
 
@@ -113,7 +114,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         active.append(job_info)
         cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-        return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': datetime.now().strftime('%d-%m-%Y %H:%M:%S')})
+        return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': start_time})
     
     except Exception as e:
         logger.exception("Exception while starting JIPipe job")
@@ -143,9 +144,12 @@ def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         owner = conn.getUser().getName()
         user_key = f"active_jipipe_jobs_{owner}"
         active = cache.get(user_key, [])
-        job_exists = any(job["job_uuid"] == job_uuid for job in active)
+        job_exists = any(job_info["job_uuid"] == job_uuid for job_info in active)
         if not job_exists:
             return JsonResponse({'error': 'Job not found or not owned by you'}, status=404)
+        
+        # Get active job infos
+        active_job_info = [job_info for job_info in active if job_info["job_uuid"] == job_uuid][0]
 
         # Revoke the Celery task (terminate immediately with SIGTERM)
         result = AsyncResult(job_uuid)
@@ -155,7 +159,7 @@ def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         active = [job for job in active if job["job_uuid"] != job_uuid]
         cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-        return JsonResponse({'status': 'terminated', 'job_id': job_uuid})
+        return JsonResponse({'status': 'terminated', 'job_uuid': job_uuid, 'name': active_job_info["name"], 'start_time': active_job_info["start_time"]})
 
     except json.JSONDecodeError:
         return JsonResponse({'error': 'Invalid JSON'}, status=400)
@@ -195,14 +199,14 @@ def get_latest_jipipe_job(request, conn=None, **kwargs):
         latest_job_time = 0.0
         latest_job_index = -1
         for job_index, job_info in enumerate(active):
-            start_time_dt = datetime.strptime(job_info["start_time"], '%d-%m-%Y %H:%M:%S')
+            start_time_dt = datetime.strptime(job_info["start_time"], '%d-%m-%Y_%H:%M:%S')
             absolute_start_time = int(start_time_dt.timestamp())
 
             if absolute_start_time > latest_job_time:
                 latest_job_time = absolute_start_time
                 latest_job_index = job_index
 
-        return JsonResponse({'job_id': active[latest_job_index]["job_uuid"]})
+        return JsonResponse({'job_uuid': active[latest_job_index]["job_uuid"],'name': active[latest_job_index]["name"], 'start_time': active[latest_job_index]["start_time"]})
     
     except Exception as e:
         return JsonResponse({'error': str(e), 'trace': traceback.format_exc(), 'active_jobs': active}, status=500)
@@ -223,7 +227,10 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
     """
     try:
         # Get the log file from LOG_DIR using the job UUID
-        log_file = os.path.join(LOG_DIR, f'{job_uuid}.log')
+        log_file = "an/imaginary/path/that/does/not/exist"
+        for file in os.listdir(LOG_DIR):
+            if job_uuid in file:
+                log_file = os.path.join(LOG_DIR, file)
         
         # Raise an error if the log file does not exist
         if not os.path.exists(log_file):
@@ -240,11 +247,14 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
         active_job_uuid_list = [job["job_uuid"] for job in active]
 
         # Determine if the job finished by checking the exit code message or if it is still in the active set
-        finished = any('JIPipe exited with code' in line for line in log_lines[-3:]) or (job_uuid not in active_job_uuid_list)
-        status = 'finished' if finished else 'running'
+        status = (
+            'finished' if any('JIPipe exited with code' in line for line in log_lines[-3:]) else
+            'canceled' if (job_uuid not in active_job_uuid_list) else
+            'running'
+        )
 
         # Remove the job from active cache if it has finished but not removed yet
-        if finished and job_uuid in active_job_uuid_list:
+        if status != "running" and job_uuid in active_job_uuid_list:
             active = [job for job in active if job["job_uuid"] != job_uuid]
             cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 

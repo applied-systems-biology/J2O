@@ -855,13 +855,23 @@
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrftoken },
             body: JSON.stringify({ job_id: jobId })
           });
+
           const text = await resp.text();
+          let json_response;
+          try {
+            json_response = JSON.parse(text);
+          } catch (parseErr) {
+            console.error("Failed to parse JSON:", text);
+            logOutput.textContent += `\nServer returned non-JSON response: ${text}`;
+            return;
+          }
+          
           if (!resp.ok) {
-            logOutput.textContent += `\nFailed to stop job ${jobId}: ${resp.status}\n${text}`;
+            logOutput.textContent += `\nFailed to stop job ${jobId}: ${resp.status}\n${json_response.error}`;
             return;
           }
           // If the request was successful, display message in the log output
-          logOutput.textContent += `\nCanceling job ${jobId}`;
+          logOutput.textContent += `\nCanceled job ${json_response.name} started at ${json_response.start_time}\n`;
           loadRunningJobs();
         } catch (err) {
           console.error('Error while calling stop_jipipe_job:', err);
@@ -954,7 +964,8 @@
 
         // Get the Log Window output and clear it to have a clean slate for the started job
         const logOutput = document.getElementById('logOutput');
-        logOutput.textContent = '';
+        
+        logOutput.textContent += 'Starting new JIPipeRunner task...\n';
 
         // Send a request to the server to start the job
         const response = await fetch('/JIPipeRunner/jipipe_start_job/', {
@@ -997,13 +1008,15 @@
         // Get the log output DOM element to update it
         const logOutput = document.getElementById('logOutput');
         const logContainer = logOutput.parentElement;
-        logOutput.textContent = ""
+        logOutput.textContent = "New task started!\n\n"
 
         // Add variables for status checks
         let finished = false;
         let previousLogLength = 0;
         let retryCount = 0;
-        let latest_job_id = jobId
+        let latest_job_id = jobId;
+        let latest_job_name = null;
+        let latest_job_start_time = null;
 
         // Continue updating the log window until the job is finished
         while (!finished) {
@@ -1020,11 +1033,16 @@
           }
 
           // If the response is OK, get the job infos and update latest job id
-          const { job_id: fetched_job_id } = await resp.json();
-          latest_job_id = fetched_job_id
+          const { job_uuid: fetched_job_id, name: fetched_job_name, start_time: fetched_job_start_time } = await resp.json();
 
-          if (latest_job_id != jobId && latest_job_id != null){
-            break;
+          if (fetched_job_id != undefined){
+            latest_job_id = fetched_job_id;
+            latest_job_name = fetched_job_name;
+            latest_job_start_time = fetched_job_start_time;
+          }
+
+          if (latest_job_id != jobId){
+            continue;
           }
 
           // Send a request to the server to fetch the JIPipe log of the associated job
@@ -1037,13 +1055,13 @@
             // Retry fetching the log up to 5 times to allow log creation
             if (retryCount < 5){
               retryCount += 1;
-              logOutput.textContent += `\nError fetching logs: ${logResp.status}. Retrying...`;
+              logOutput.textContent += `Error fetching logs: ${logResp.status}. Retrying...\n`;
               await new Promise(resolve => setTimeout(resolve, 2000));
               continue;
             }
             // After 5 retries, terminate the log output. 
             else{
-              logOutput.textContent += `\nError fetching logs: ${logResp.status}. Terminating log output! Check if Celery worker is running!`;
+              logOutput.textContent += `\nError fetching logs: ${logResp.status}. Terminating log output! Log file could not be found in log directory.`;
               finished = true;
               continue;
             }
@@ -1053,11 +1071,18 @@
           const { status, logs } = await logResp.json();
 
           // Update the UI if the fetched log content is larger than before
-          if ((logs.length > previousLogLength && latest_job_id === jobId) || (status === "finished" && logs.length > previousLogLength)) {
+          if (logs.length > previousLogLength && status != "canceled" && latest_job_id === jobId) {
             // Only add new content to the UI and update the logLength
-            const newLines = logs.slice(previousLogLength).join('\n') + '\n';
+            const newLines = logs.slice(previousLogLength).join('\n');
+
+            // Add job identification before each line
+            const annotatedLines = newLines
+              .split('\n')
+              .map(line => `${latest_job_name} @ ${latest_job_start_time}: ${line}`);
+            const finalOutput = annotatedLines.join('\n') + "\n";
+          
             const isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 1;
-            logOutput.textContent += newLines;
+            logOutput.textContent += finalOutput;
             previousLogLength = logs.length;
 
             // Only jump to the bottom if scrollbar was at the bottom before
@@ -1066,8 +1091,8 @@
             }      
           }
 
-          // If the job status is finished, terminate log output and if not continue with it after 2 seconds
-          finished = (status === 'finished');
+          // If the job status is finished or canceled, terminate log output and if not continue with it after 2 seconds
+          finished = (status != "running");
           if (!finished) await new Promise(resolve => setTimeout(resolve, 2000));
         }
       }
