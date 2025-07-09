@@ -56,6 +56,9 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
 
         imagej_path = "/opt/JIPipe_Installations/{}/{}".format(major_version, imagej_executable_name) # Hardcoded because path is set in docker container
 
+        if not os.path.exists(imagej_path):
+            raise FileNotFoundError("The ImageJ executable was not found. Check if the version of your .jip file is supported!")
+
         # Define the command to run JIPipe using ImageJ CLI
         # TODO: Make memory configurable
         command = [
