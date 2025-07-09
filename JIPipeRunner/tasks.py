@@ -36,6 +36,9 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
     process = None
 
     try:
+        # Get the version of the .jip file
+        major_version = int(jipipe_project_config["dependencies"][0]["version"].split(".")[0])
+
         # Save the JIPipe project configuration to a file to access it via ImageJ CLI
         jip_project_file_path = Path(temp_input) / 'JIPipeProject.jip'
         with open(jip_project_file_path, 'w') as f:
@@ -46,10 +49,12 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
         with open(jip_parameter_override_file_path, 'w') as f:
             json.dump(parameter_override_json, f)
 
-        # Get the ImageJ path from the OMERO configuration to run JIPipe on
-        cfg_file = os.path.join(os.environ["OMERODIR"], "etc", "grid", "config.xml")
-        cfg = ConfigXml(cfg_file, read_only=True)
-        imagej_path = cfg.as_map().get("omero.web.imagej")
+        # Use the ImageJ JIPipe installation according to major version
+        imagej_executable_name = "ImageJ-linux64"
+        if major_version >= 6:
+            imagej_executable_name = "fiji-linux-x64"
+
+        imagej_path = "/opt/JIPipe_Installations/{}/{}".format(major_version, imagej_executable_name) # Hardcoded because path is set in docker container
 
         # Define the command to run JIPipe using ImageJ CLI
         # TODO: Make memory configurable
@@ -66,7 +71,6 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
         ]
 
         # Add --fast-init to command if version is supporting it 
-        major_version = int(jipipe_project_config["dependencies"][0]["version"].split(".")[0])
         if major_version >= 5:
             command.append('--fast-init')
 
@@ -106,7 +110,6 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
 
     finally:
         # Close cfg and clean up cache and temporary directories
-        cfg.close()
         user_key = f"active_jipipe_jobs_{omero_user_name}"
         active = cache.get(user_key, [])
         active = [job for job in active if job["job_uuid"] != job_uuid]
