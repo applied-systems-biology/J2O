@@ -3,7 +3,7 @@ USER root
 
 # Install JIPipeRunner
 WORKDIR /opt
-RUN /opt/omero/web/venv3/bin/pip install git+https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
+RUN /opt/omero/web/venv3/bin/pip install git+https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin@test_celery_container_branch
 
 # Install tools and Java runtime for Fiji
 RUN dnf install -y java-17-openjdk-headless xorg-x11-server-Xvfb && dnf clean all
@@ -34,7 +34,7 @@ RUN xvfb-run Fiji.app/ImageJ-linux64 --headless --update update
 
 # ---- INSTALL JIPipe ----
 RUN mkdir Fiji.app/plugins/JIPipe
-WORKDIR /opt/Fiji.app/plugins/JIPipe
+WORKDIR /opt/JIPipe_Installations/4/Fiji.app/plugins/JIPipe
 RUN wget https://github.com/applied-systems-biology/jipipe/releases/download/pom-jipipe-4.1.0/JIPipe-4.1.0.zip && \
     unzip JIPipe-4.1.0.zip && rm JIPipe-4.1.0.zip
 
@@ -64,7 +64,7 @@ RUN xvfb-run Fiji.app/ImageJ-linux64 --headless --update update
 
 # ---- INSTALL JIPipe ----
 RUN mkdir Fiji.app/plugins/JIPipe
-WORKDIR /opt/Fiji.app/plugins/JIPipe
+WORKDIR /opt/JIPipe_Installations/5/Fiji.app/plugins/JIPipe
 RUN wget https://github.com/applied-systems-biology/jipipe/releases/download/pom-jipipe-5.3.0/JIPipe-5.3.0.zip && \
     unzip JIPipe-5.3.0.zip && rm JIPipe-5.3.0.zip
 
@@ -75,6 +75,6 @@ WORKDIR /opt
 COPY requirements.txt /tmp/requirements.txt
 RUN /opt/omero/web/venv3/bin/pip install -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
-ENTRYPOINT[]
+ENTRYPOINT []
 
 CMD ["/opt/omero/web/venv3/bin/celery", "-A", "JIPipePlugin", "worker", "--loglevel=info", "-E"]
