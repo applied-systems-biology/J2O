@@ -16,20 +16,6 @@ import json
 import warnings
 from omero.config import ConfigXml
 
-# Try to find the cache location from OMERO config (requires OMERODIR to be set)
-try:
-    cfg_file = os.path.join(os.environ["OMERODIR"], "etc", "grid", "config.xml")
-    cfg = ConfigXml(cfg_file, read_only=True)
-    raw = cfg.as_map().get("omero.web.caches")
-
-    if raw:
-        CACHES = json.loads(raw)
-    else:
-        raise RuntimeError("omero.web.caches not found in config.xml")
-
-except Exception as e:
-    raise RuntimeError(f"Failed to load OMERO cache config: {e}")
-
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
