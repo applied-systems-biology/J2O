@@ -24,6 +24,9 @@ else
     OMERODIR="/opt/omero/web/omero-web"
 fi
 
+# Ensure omero-web owns the plugin directory to avoid build errors
+sudo chown -R "$OMERO_USER":"$OMERO_USER" "$CURRENT_DIR"
+
 # === VALIDATE ENV VAR ===
 OMERO_CLI=(sudo -u "$OMERO_USER" env OMERODIR="$OMERODIR" "$OMERO_PATH")
 if [ "$EUID" -ne 0 ]; then
