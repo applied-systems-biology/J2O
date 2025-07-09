@@ -1,0 +1,8 @@
+# Django
+Django>=4.2
+djangorestframework>=3.14.0
+django-extensions>=3.2.3
+
+# Celery and Redis for background task processing
+celery>=5.3
+redis>=5.0
