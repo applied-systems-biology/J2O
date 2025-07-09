@@ -15,19 +15,24 @@ done
 if [ "$DEFAULT_ANSWER" = "n" ]; then
     read -p "Enter the system username used to run OMERO (default should be omero-web): " OMERO_USER
     read -p "Enter the path to omero-web pip (default should be /opt/omero/web/venv3/bin/pip): " PIP_PATH
+    read -p "Enter the path to omero bin (default should be /opt/omero/web/venv3/bin/omero): " OMERO_PATH
+    read -p "Enter the OMERODIR path (default should be /opt/omero/web/omero-web): " OMERODIR
 else
     OMERO_USER="omero-web"
     PIP_PATH="/opt/omero/web/venv3/bin/pip"
+    OMERO_PATH="/opt/omero/web/venv3/bin/omero"
+    OMERODIR="/opt/omero/web/omero-web"
 fi
 
 # === VALIDATE ENV VAR ===
+OMERO_CLI=(sudo -u "$OMERO_USER" env OMERODIR="$OMERODIR" "$OMERO_PATH")
 if [ "$EUID" -ne 0 ]; then
     echo "Please run this script as root or with sudo"
     exit 1
 fi
 
-if ! sudo -u "$OMERO_USER" command -v omero &> /dev/null; then
-    echo "Error: 'omero' CLI not found in PATH for user $OMERO_USER"
+if ! "${OMERO_CLI[@]}" -h &> /dev/null; then
+    echo "Error: 'omero' CLI not usable for user $OMERO_USER"
     exit 1
 fi
 
@@ -55,28 +60,31 @@ fi
 
 # === CONFIGURE OMERO WEB ===
 echo "Configuring omero config..."
+
+OMERO_CONFIG_CACHES=$("${OMERO_CLI[@]}" config get omero.web.caches)
+OMERO_CLI=(sudo -u "$OMERO_USER" env OMERODIR="$OMERODIR" OMERO_CONFIG_CACHES="$OMERO_CONFIG_CACHES" "$OMERO_PATH")
 APP_ENTRY='"JIPipeRunner"'
 PLUGIN_ENTRY='["JIPipeRunner", "JIPipeRunner/right_plugin_example.js.html", "jipipe_form_container"]'
 
-CURRENT_APPS=$(omero config get omero.web.apps 2>/dev/null || echo "")
+CURRENT_APPS=$("${OMERO_CLI[@]}" config get omero.web.apps 2>/dev/null || echo "")
 
 if echo "$CURRENT_APPS" | grep -Fq "$APP_ENTRY"; then
     echo "$APP_ENTRY already present in omero.web.apps"
 else
     echo "Appending $APP_ENTRY to omero.web.apps"
-    sudo -u "$OMERO_USER" omero config append omero.web.apps "$APP_ENTRY"
+    "${OMERO_CLI[@]}" config append omero.web.apps "$APP_ENTRY"
 fi
 
 # === Append to omero.web.ui.right_plugins if not already present ===
 echo "Checking omero.web.ui.right_plugins..."
-CURRENT_PLUGINS=$(sudo -u "$OMERO_USER" omero config get omero.web.ui.right_plugins 2>/dev/null || echo "[]")
+CURRENT_PLUGINS=$("${OMERO_CLI[@]}" config get omero.web.ui.right_plugins 2>/dev/null || echo "[]")
 
 # Use Python to parse the list of lists and check for an exact match
 PLUGIN_CHECK=$(python3 -c "
 import json
 import sys
 current = json.loads('$CURRENT_PLUGINS')
-target = """$PLUGIN_ENTRY"""
+target = $PLUGIN_ENTRY
 if target in current:
     sys.exit(0)
 else:
@@ -87,7 +95,7 @@ if [ "$?" -eq 0 ]; then
     echo "$PLUGIN_ENTRY already present in omero.web.ui.right_plugins"
 else
     echo "Appending $PLUGIN_ENTRY to omero.web.ui.right_plugins"
-    sudo -u "$OMERO_USER" omero config append omero.web.ui.right_plugins "$PLUGIN_ENTRY"
+    "${OMERO_CLI[@]}" config append omero.web.ui.right_plugins "$PLUGIN_ENTRY"
 fi
 
 # === ASK IF OMERO WEB SHOULD BE RESTARTED ===
@@ -99,5 +107,5 @@ while [[ "$RESTART_ANSWER" != "n" && "$RESTART_ANSWER" != "y" ]]; do
     done
 
     if [ "$RESTART_ANSWER" = "y" ]; then
-        sudo -u "$OMERO_USER" omero web restart
+        "${OMERO_CLI[@]}" web restart
     fi
