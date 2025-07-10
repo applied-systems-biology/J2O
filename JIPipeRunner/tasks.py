@@ -49,7 +49,7 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
         with open(jip_parameter_override_file_path, 'w') as f:
             json.dump(parameter_override_json, f)
 
-        imagej_path = "/opt/JIPipe_Installations/{}/fiji-linux-x64".format(major_version) # Hardcoded because path is set in docker container
+        imagej_path = "/opt/JIPipe_Installations/{}/Fiji.app/fiji-linux-x64".format(major_version) # Hardcoded because path is set in docker container
 
         if not os.path.exists(imagej_path):
             raise FileNotFoundError("The ImageJ executable was not found at " + imagej_path + ". Check if the version of your .jip file is supported!")
