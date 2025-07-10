@@ -7,6 +7,7 @@ RUN /opt/omero/web/venv3/bin/pip install git+https://asb-git.hki-jena.de/MWank/O
 
 # Install tools and Java runtime for Fiji
 RUN dnf install -y java-17-openjdk-headless xorg-x11-server-Xvfb && dnf clean all
+RUN dnf install -y jq
 
 # ---- INSTALL ALL DIFFERENT JIPIPE VERSIONS ------------
 RUN mkdir JIPipe_Installations
@@ -75,6 +76,7 @@ WORKDIR /opt
 COPY requirements.txt /tmp/requirements.txt
 RUN /opt/omero/web/venv3/bin/pip install -r /tmp/requirements.txt && rm /tmp/requirements.txt
 
-ENTRYPOINT []
-
-CMD ["/opt/omero/web/venv3/bin/celery", "-A", "JIPipePlugin", "worker", "--loglevel=info", "-E"]
+# Copy the dynamic entrypoint script
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
