@@ -871,6 +871,7 @@
             return;
           }
           // If the request was successful, display message in the log output
+          await new Promise(resolve => setTimeout(resolve, 2000));  // small delay to wait for last log output
           logOutput.textContent += `\nCanceled job ${json_response.name} started at ${json_response.start_time}\n`;
           loadRunningJobs();
         } catch (err) {
@@ -979,7 +980,8 @@
             jip_content: jip_file_content,
             jip_parameter_overrides: job_parameter_override,
             jip_name: jip_file_name,
-            custom_output_config_enabled: document.getElementById('enableOutputConfig').checked
+            custom_output_config_enabled: document.getElementById('enableOutputConfig').checked,
+            major_version: jip_file_major_version
           })
         });
 
@@ -1008,7 +1010,8 @@
         // Get the log output DOM element to update it
         const logOutput = document.getElementById('logOutput');
         const logContainer = logOutput.parentElement;
-        logOutput.textContent = "New task started!\n\n"
+        logOutput.textContent = `Starting new task with JIPipe version ${jip_file_major_version}...\n\n`;
+        logOutput.textContent += `Fetching logs...\n`;
 
         // Add variables for status checks
         let finished = false;
@@ -1055,7 +1058,6 @@
             // Retry fetching the log up to 5 times to allow log creation
             if (retryCount < 5){
               retryCount += 1;
-              logOutput.textContent += `Error fetching logs: ${logResp.status}. Retrying...\n`;
               await new Promise(resolve => setTimeout(resolve, 2000));
               continue;
             }
@@ -1071,7 +1073,7 @@
           const { status, logs } = await logResp.json();
 
           // Update the UI if the fetched log content is larger than before
-          if (logs.length > previousLogLength && status != "canceled" && latest_job_id === jobId) {
+          if (logs.length > previousLogLength && latest_job_id === jobId) {
             // Only add new content to the UI and update the logLength
             const newLines = logs.slice(previousLogLength).join('\n');
 

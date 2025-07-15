@@ -15,7 +15,7 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 
 from JIPipePlugin.celery import app
-from JIPipeRunner.tasks import run_jipipe_task
+from JIPipeRunner.tasks import run_jipipe_task, run_jipipe_ephemeral
 from celery.result import AsyncResult
 
 import omero
@@ -25,7 +25,7 @@ from omeroweb.decorators import login_required
 
 
 # Directory where JIPipe log files are stored (customize via Django settings)
-LOG_DIR = getattr(settings, 'JIPIPE_LOG_ROOT', '/tmp/jipipe_logs')
+LOG_DIR = getattr(settings, 'JIPIPE_LOG_ROOT', '/tmp/jipipe/logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 # Time (in seconds) to keep PIDs in cache before expiring (None == never expire)
@@ -72,6 +72,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         parameter_override_json = json_request.get('jip_parameter_overrides', {})
         jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
         custom_output_config_enabled = json_request.get('custom_output_config_enabled', False)
+        major_version = json_request.get('major_version')
 
         # TODO: Validate the JIPipe JSON structure here for security and correctness
 
@@ -93,8 +94,8 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
 
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
-        run_jipipe_task.apply_async(
-            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file],
+        run_jipipe_ephemeral.apply_async(
+            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file, major_version],
             task_id=job_uuid,
             ignore_result=True,
         )
@@ -248,7 +249,7 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
 
         # Determine if the job finished by checking the exit code message or if it is still in the active set
         status = (
-            'finished' if any('JIPipe exited with code' in line for line in log_lines[-3:]) else
+            'finished' if any('Run ending at' in line for line in log_lines[-10:]) else
             'canceled' if (job_uuid not in active_job_uuid_list) else
             'running'
         )
