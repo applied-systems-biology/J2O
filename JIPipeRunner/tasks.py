@@ -1,14 +1,20 @@
 from celery import shared_task
-import json, os, tempfile, subprocess, shutil, logging
+import uuid, json, os, tempfile, subprocess, shutil, logging
 from pathlib import Path
 from django.core.cache import cache
 from omero.config import ConfigXml
 import signal
 import time
 from django.conf import settings
+import docker
+from docker.errors import ImageNotFound, NotFound
 
 # Turn SIGTERM into KeyboardInterrupt so it can be caught by the task (necessary to shutdown child processes)
 signal.signal(signal.SIGTERM, lambda signum, frame: (_ for _ in ()).throw(KeyboardInterrupt()))
+
+# Directory where JIPipe log files are stored (customize via Django settings)
+LOG_DIR = getattr(settings, 'JIPIPE_LOG_ROOT', '/tmp/jipipe/logs')
+os.makedirs(LOG_DIR, exist_ok=True)
 
 """
 This task runs a JIPipe project in the background using ImageJ CLI.
@@ -23,7 +29,7 @@ param omero_user_name: Username of the OMERO user running the job
 param jipipe_log_file_path: Path to the log file for the JIPipe job
 """
 @shared_task(bind=True)
-def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uuid, omero_user_name, jipipe_log_file_path):
+def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uuid, omero_user_name, jipipe_log_file_path, major_version):
 
     # Initialize logging
     log = logging.getLogger(__name__)
@@ -66,7 +72,6 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
         ]
 
         # Add --fast-init to command if version is supporting it 
-        major_version = int(jipipe_project_config["dependencies"][0]["version"].split(".")[0])
         if major_version >= 5:
             command.append('--fast-init')
 
@@ -90,8 +95,6 @@ def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uu
 
             # Wait for the process to complete
             process.wait()
-
-            log_file.write(f"\n[ JIPipe exited with code {process.returncode} ]\n")
 
     except KeyboardInterrupt:
         # On receiving SIGTERM terminate the process if one was defined
@@ -125,3 +128,77 @@ def safe_rmtree(path, retries=3, delay=1):
                 time.sleep(delay)
             else:
                 raise e
+
+@shared_task(bind=True, acks_late=True)
+def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int | None = None):
+
+    # Initialize logging
+    log = logging.getLogger(__name__)
+
+    # Create temporary directories for handling input and output
+    temp_input = tempfile.mkdtemp()
+    temp_output = tempfile.mkdtemp()
+
+    # Empty container variable
+    container = None
+
+    try:
+        # Client for docker
+        client = docker.from_env()
+
+        # Dump input into temp directory
+        (Path(temp_input) / "JIPipeProject.jip").write_text(json.dumps(jipipe_project_config))
+        (Path(temp_input) / "JIPipeProject_Parameter_Override.json").write_text(
+            json.dumps(parameter_override_json)
+        )
+
+        # Run the container on the image corresponding to the JIPipe version
+        image   = f"mariuswank/jipipe_headless:{jipipe_version}"
+        name    = f"jipipe-{jipipe_version}-{job_uuid[:8]}"
+
+        command = [
+            "run",
+            "--project",              "/work/input/JIPipeProject.jip",
+            "--overwrite-parameters", "/work/input/JIPipeProject_Parameter_Override.json",
+            "--output-folder",        "/work/output",
+        ]
+
+        container = client.containers.run(
+            image,
+            command=command,
+            name=name,
+            detach=True,
+            auto_remove=False,
+            network_mode="host",
+            volumes={
+                str(temp_input) : {"bind": "/work/input",  "mode": "ro"},
+                str(temp_output): {"bind": "/work/output", "mode": "rw"},
+            },
+            stdout=True,
+            stderr=True
+        )
+
+        # Stream the log
+        for line in container.logs(stream=True):
+            decoded = line.decode()
+            with open(jipipe_log_file_path, "a") as logfile:
+                logfile.write(decoded)
+        
+        exit_code = container.wait()["StatusCode"]
+
+    except (ImageNotFound, NotFound) as err:
+        # tag doesn’t exist or pull failed
+        log.error("Docker image not found: %s", err)
+        with open(jipipe_log_file_path, "a") as logfile:
+                logfile.write("The requested docker image was not found. Check if the JIPipe version you used creating the .jip file is supported by the plugin!\n")
+                logfile.write("Stopping task!\n")
+
+    finally:
+        if container is not None:
+            container.remove(force=True)   
+        user_key = f"active_jipipe_jobs_{omero_user_name}"
+        active = cache.get(user_key, [])
+        active = [job for job in active if job["job_uuid"] != job_uuid]
+        cache.set(user_key, active, timeout=None)
+        safe_rmtree(temp_input)
+        safe_rmtree(temp_output)
