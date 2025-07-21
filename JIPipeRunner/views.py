@@ -139,7 +139,7 @@ def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         job_dict = json.loads(request.body)
         job_uuid = job_dict.get('job_id')
         if not job_uuid:
-            return JsonResponse({'error': 'Missing job_id'}, status=400)
+            return JsonResponse({'error': 'No job ID was provided'}, status=422)
         
         # Get the current user and their active jobs from cache to verify ownership
         owner = conn.getUser().getName()
@@ -147,7 +147,7 @@ def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         active = cache.get(user_key, [])
         job_exists = any(job_info["job_uuid"] == job_uuid for job_info in active)
         if not job_exists:
-            return JsonResponse({'error': 'Job not found or not owned by you'}, status=404)
+            return JsonResponse({'error': f'Job does not exist for user {owner}'}, status=404)
         
         # Get active job infos
         active_job_info = [job_info for job_info in active if job_info["job_uuid"] == job_uuid][0]
@@ -163,7 +163,7 @@ def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         return JsonResponse({'status': 'terminated', 'job_uuid': job_uuid, 'name': active_job_info["name"], 'start_time': active_job_info["start_time"]})
 
     except json.JSONDecodeError:
-        return JsonResponse({'error': 'Invalid JSON'}, status=400)
+        return JsonResponse({'error': 'Invalid JSON', 'trace': traceback.format_exc()}, status=400)
 
 @require_GET
 @login_required()
@@ -235,7 +235,7 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
         
         # Raise an error if the log file does not exist
         if not os.path.exists(log_file):
-            raise Http404(f'Job not found: {job_uuid}')
+            return JsonResponse({"status": "pending", "logs": []}, status=204)
 
         # Get the log lines from the file to return them
         with open(log_file, 'r') as file_handle:
@@ -249,7 +249,7 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
 
         # Determine if the job finished by checking the exit code message or if it is still in the active set
         status = (
-            'finished' if any('Run ending at' in line for line in log_lines[-10:]) else
+            'finished' if any('Run ending at' in line for line in log_lines[-10:]) or any("JIPipe container exited with code 0" in line for line in log_lines[-1:]) else
             'canceled' if (job_uuid not in active_job_uuid_list) else
             'running'
         )
@@ -261,12 +261,9 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
 
         return JsonResponse({'status': status, 'logs': log_lines})
     
-    except Exception as parse_error:
-        logger.exception('Failed to retrieve jipipe log: %s', parse_error)
-        return HttpResponse(
-            f'Error retrieving jipipe log: {parse_error}',
-            status=400,
-        )
+    except Exception as error:
+        logger.exception('Failed to retrieve jipipe log: %s', error)
+        return JsonResponse({'error': f'Error retrieving jipipe log: {error}'}, status=400)
 
 @login_required()
 def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonResponse:
@@ -280,24 +277,26 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
     param jip_file_id: Unique identifier for the JIPipe file in OMERO
     param conn: OMERO connection object (optional, used for user context)
     """
-    # Get the .jip file from OMERO using the provided file ID
-    jip_file = conn.getObject('originalfile', jip_file_id)
-
-    # If the file does not exist, return a 404 error
-    if jip_file is None or not jip_file.getName().endswith('.jip'):
-        return HttpResponse(f'.jip file with ID {jip_file_id} not found.', status=404)
-    
     try:
+        # Get the .jip file from OMERO using the provided file ID
+        jip_file = conn.getObject('originalfile', jip_file_id)
+
+        # If the file does not exist, return a 404 error
+        if jip_file is None or not jip_file.getName().endswith('.jip'):
+            raise FileNotFoundError(f".jip file with ID {jip_file_id} not found.")
+        
         # Read and parse the JSON data from the annotation
         raw_bytes = b''.join(jip_file.getFileInChunks())
         config_text = raw_bytes.decode('utf-8')
         config_data = json.loads(config_text)
-    except Exception as parse_error:
+    
+    except FileNotFoundError as e:
+        logger.error(str(e), exc_info=1)
+        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=404)
+    
+    except json.JSONDecodeError as parse_error:
         logger.error('Failed to parse JIPipe JSON: %s', parse_error)
-        return HttpResponse(
-            f'Error parsing JIPipe JSON: {parse_error}',
-            status=400,
-        )
+        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=400)
 
     return JsonResponse(config_data, safe=False)
 
@@ -352,11 +351,9 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
     
     except Exception as e:
         # log the full stack trace so you can see what went wrong
-        logger.exception("Failed to list JIPipe files")
+        logger.exception('Failed to list JIPipe files: {e}')
         return JsonResponse(
-            {'error': f'Internal server error retrieving JIPipe files: {e}'},
-            status=500
-        )
+            {'error': f'Internal server error retrieving JIPipe files: {e}', 'trace': traceback.format_exc()}, status=500)
     
     finally:
         conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
@@ -411,11 +408,8 @@ def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
     
     except Exception as e:
         # log the full stack trace so you can see what went wrong
-        logger.exception("Failed to list available datasets")
-        return JsonResponse(
-            {'error': f'Internal server error listing available datasets: {e}'},
-            status=500
-        )
+        logger.exception("Error when trying to lists available datasets: {e}", exc_info=1)
+        return JsonResponse({'error': f'Internal server error listing available datasets: {e}', 'trace': traceback.format_exc()}, status=500)
     
     finally:
         conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
