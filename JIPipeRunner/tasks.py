@@ -163,6 +163,9 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             "--output-folder",        "/work/output",
         ]
 
+        uid = os.getuid()
+        gid = os.getgid()
+
         container = client.containers.run(
             image,
             command=command,
@@ -170,6 +173,7 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             detach=True,
             auto_remove=False,
             network_mode="host",
+            user=f"{uid}:{gid}",
             volumes={
                 str(temp_input) : {"bind": "/work/input",  "mode": "ro"},
                 str(temp_output): {"bind": "/work/output", "mode": "rw"},
@@ -185,6 +189,11 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
                 logfile.write(decoded)
         
         exit_code = container.wait()["StatusCode"]
+        with open(jipipe_log_file_path, "a") as logfile:
+            logfile.write("JIPipe container exited with code {}\n".format(str(exit_code)))
+
+        if exit_code != 0 and exit_code < 128:
+            raise RuntimeError
 
     except (ImageNotFound, NotFound) as err:
         # tag doesn’t exist or pull failed
@@ -192,6 +201,12 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         with open(jipipe_log_file_path, "a") as logfile:
                 logfile.write("The requested docker image was not found. Check if the JIPipe version you used creating the .jip file is supported by the plugin!\n")
                 logfile.write("Stopping task!\n")
+
+    except RuntimeError as err:
+        log.error("Unexpected error in JIPipe task: %s. Check the JIPipe log!", err)
+        with open(jipipe_log_file_path, "a") as logfile:
+            logfile.write("Unexpected error in JIPipe execution. Check the JIPipe log above.\n")
+            logfile.write("Stopping task!\n")
 
     finally:
         if container is not None:
