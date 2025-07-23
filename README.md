@@ -22,78 +22,64 @@ See: [CC BY 4.0 License](https://creativecommons.org/licenses/by/4.0/)
 - **Tom Select** (UI select widget)  
   Licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
 
-### Required Software
 
 This plugin is designed to work with **JIPipe**, developed by **Ruman Gerst and Zoltán Csereynes**.  
-> ⚠️ JIPipe is **not** included in this plugin’s distribution. Please visit [jipipe.org](https://jipipe.org) for download and license details.
+> JIPipe is **not** included in this plugin’s distribution. Please visit [jipipe.org](https://jipipe.org) for license details.
 
 ## Requirements
 
 - Python 3.10
-- omero-web 5.28
-- Django 4.2
-- JIPipe 5.0 or later
-- XVFB
+- omero-web
+- Django
+- Docker
 - Celery 
 - redis
 
 ## Installation
 
-This section assumes that [omero-web](https://github.com/ome/omero-web) is already setup with redis caching and that JIPipe has been installed on the server via ImageJ as described by the [JIPipe documentation for manual installation](https://jipipe.hki-jena.de/documentation/manual-installation.html). If the plugin has trouble finding the ImageJ executable, double check if the application is installed to the server and that the environment variable **OMERODIR** is set as described in the [OMERO.web installation guide](https://docs.openmicroscopy.org/omero/5.6.0/sysadmins/unix/install-web/web-deployment.html). This is also important for the redis caching to work properly.
+This plugin assumes that [omero-web](https://github.com/ome/omero-web) has been setup as described in its [documentation](https://omero.readthedocs.io/en/stable/sysadmins/unix/install-web/web-deployment). To ease the installation process of the plugin, a bash script is provided in the repository. For manual installation, check the [guide for manual installation](ManualInstallationGuide.md).
+
+### Step 0
+Docker is required for the plugin to run. So be sure to install it according to the [docker documentation](https://docs.docker.com/engine/install/) before starting the installation process.
 
 ### Step 1
-
-Within your [omero-web](https://github.com/ome/omero-web) virtual environment, install the plugin using [pip](https://pip.pypa.io/en/stable/):
+Clone the repository and navigate to the folder:
 ```bash
-pip install git+https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
+git clone https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
+cd OMERO_JIPipe_Plugin
 ```
 
 ### Step 2
-
-Add "JIPipeRunner" to the list of installed apps using [omero-web](https://github.com/ome/omero-web):
+Install the required python libraries using the requirements.txt:
 ```bash
-omero config append omero.web.apps '"JIPipeRunner"'
+pip install -r requirements.txt
 ```
 
 ### Step 3
-
-Add the plugin to the right panel plugins using [omero-web](https://github.com/ome/omero-web):
+Setup redis if you have not done so before. If you already have it setup (even at another location) you can ignore this step:
 ```bash
-omero config append omero.web.ui.right_plugins '["JIPipeRunner", "JIPipeRunner/right_plugin_example.js.html", "jipipe_form_container"]
+service redis-server start
+omero config set omero.web.caches '{"default": {"BACKEND": "django_redis.cache.RedisCache", "LOCATION": "redis://127.0.0.1:6379/0"}}'
 ```
+>⚠️ **Be sure your omero setup does not depend on other caching methods** ⚠️
 
 ### Step 4
-
-Set the path to the ImageJ executable from the [manual installation of JIPipe](https://jipipe.hki-jena.de/documentation/manual-installation.html) using [omero-web](https://github.com/ome/omero-web):
+Run the bash script as omero-web with sudo privileges or as root:
 ```bash
-omero config set omero.web.imagej "/path/to/ImageJ"
+sudo bash installJIPipeRunner.sh
 ```
 
-### Step 5
+The script will ask for input if you have deviated from the default setup used in the [official omero-web installation documentation](https://omero.readthedocs.io/en/stable/sysadmins/unix/install-web/web-deployment). It will check if you have followed the installation process correctly, automatically set the remaining omero config, install JIPipeRunner via pip, check if redis is reachable, start a celery background worker and restart omero-web to apply changes if you wish so. 
 
-Restart [omero-web](https://github.com/ome/omero-web) for the changes to take effect:
+## Managing celery
+Celery is used as a task queue in the plugin. A so called worker must be launched for celery to process started tasks. This is done automatically when using the provided bash script. In case this fails or you have shutdown the worker, just run this in your omero-web environment to start a new one in the background:
 ```bash
-omero web restart
+celery -A JIPipePlugin worker --loglevel=info -E --detach
 ```
 
-Should there be any errors please regarding the webclient plugin installation refer to the official [OMERO WebclientPlugin documentation](https://docs.openmicroscopy.org/omero/5.6.3/developers/Web/WebclientPlugin.html).
-
-### Step 6
-
-Launch a Celery worker that will manage the jobs launched by the JIPipeRunner Celery app using:
+Should you wish to terminate the workers associated with the plugin, simply run this in your omero-web environment:
 ```bash
-celery -A JIPipePlugin worker --loglevel=info
-```
-
-The worker will use the redis cache as a backend that is defined in the OMERO settings, so be sure to have followed the [OMERO.web installation guide](https://docs.openmicroscopy.org/omero/5.6.0/sysadmins/unix/install-web/web-deployment.html) to include redis caching and define the OMERODIR environment variable correctly. JIPipeRunner will use your default cache backend location at:
-
-```text
-omero.web.caches = {
-  "default": {
-    "BACKEND": "django_redis.cache.RedisCache",
-    "LOCATION": "redis://127.0.0.1:6379/0"
-  }
-}
+celery -A JIPipePlugin control shutdown
 ```
 
 ## User guide
@@ -147,7 +133,7 @@ When checking **Enable output config** in the [file selection](#file-selection),
 
 ### PARAMETER CONFIGURATION
 
-This section contains the input fields of the parameters that are defined as reference parameters within the .jip file. Depending on the node and parameter type that is referenced, the input fields accept integers, floats or strings as input. When hovering the **?** the plugin will display a tooltip with the description of the respective parameter (if it was set in the [project overview](https://jipipe.hki-jena.de/documentation/project-overview.html)).
+This section contains the input fields of the parameters that are defined as reference parameters within the .jip file. Nodes with a predefined set of valid options will have a dropdown menu to choose from. Other nodes will accept strings, integers or floats as input depending on the node type. When hovering the **?** the plugin will display a tooltip with the description of the respective parameter (if it was set in the [project overview](https://jipipe.hki-jena.de/documentation/project-overview.html)).
 
 Below this section you will find the **Start JIPipeRunner** button to execute the selected .jip file.
 
