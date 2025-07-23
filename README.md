@@ -42,6 +42,21 @@ This plugin assumes that [omero-web](https://github.com/ome/omero-web) has been 
 ### Step 0
 Docker is required for the plugin to run. So be sure to install it according to the [docker documentation](https://docs.docker.com/engine/install/) before starting the installation process.
 
+Additionally, the omero-web user needs to be part of the docker group. You can test this by running:
+```bash
+groups omero-web
+```
+
+If docker is missing, add it by running:
+```bash
+sudo usermod -aG docker omero-web
+```
+
+and restart to apply:
+```bash
+sudo systemctl restart omero-web
+```
+
 ### Step 1
 Clone the repository and navigate to the folder:
 ```bash
