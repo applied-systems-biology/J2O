@@ -1062,13 +1062,19 @@
             // If the response is OK, get the job infos and update latest job id
             const { job_uuid: fetched_job_id, name: fetched_job_name, start_time: fetched_job_start_time } = await resp.json();
 
-            if (fetched_job_id != undefined){
+            // If a job_id is returned, update the variables
+            if (fetched_job_id != null){
               latest_job_id = fetched_job_id;
               latest_job_name = fetched_job_name;
               latest_job_start_time = fetched_job_start_time;
             }
+            else {  // Kill the log update if no more jobs are found
+              return;
+            }
 
+            // Wait a bit before trying to fetch the latest job again
             if (latest_job_id != jobId){
+              await new Promise(resolve => setTimeout(resolve, 5000));
               continue;
             }
 

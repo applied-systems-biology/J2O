@@ -194,7 +194,7 @@ def get_latest_jipipe_job(request, conn=None, **kwargs):
         active = cache.get(user_key, [])
 
         if not active:
-            return JsonResponse({'job_id': None})
+            return JsonResponse({'job_id': None, 'name': None, 'start_time': None})
 
         # Get the infos for the latest job
         latest_job_time = 0.0
