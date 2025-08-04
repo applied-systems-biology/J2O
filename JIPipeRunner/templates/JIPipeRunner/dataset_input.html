@@ -1032,105 +1032,129 @@
       * Continuously fetch logs for the given job ID and update the log output.
       */
       async function updateLogWindow(jobId) {
-        try{
-          // Get the log output DOM element to update it
-          const logContainer = logOutput.parentElement;
-          logOutput.textContent = `Starting new task with JIPipe version ${jip_file_major_version}...\n\n`;
-          logOutput.textContent += `Fetching logs...\n`;
-
-          // Add variables for status checks
+          // Variables for status checks
           let finished = false;
           let previousLogLength = 0;
           let retryCount = 0;
           let latest_job_id = jobId;
           let latest_job_name = null;
           let latest_job_start_time = null;
+          const logContainer = logOutput.parentElement; // DOM element to update
 
-          // Continue updating the log window until the job is finished
-          while (!finished) {
+          // --- Helper functions ---
 
-            // Fetch the most recent job and stop updating from this jobs log if it is not the most recent
-            const resp = await fetch('/JIPipeRunner/get_latest_jipipe_job/', {
-              credentials: 'same-origin'
-            });
-            if (!resp.ok) {
-              const errorJSON = await resp.json();
-              console.error(`Error ${resp.status}: ${errorJSON.error}\n${errorJSON.trace}`);
-              return;
-            }
+          // Wait for a given amount of ms
+          const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-            // If the response is OK, get the job infos and update latest job id
-            const { job_uuid: fetched_job_id, name: fetched_job_name, start_time: fetched_job_start_time } = await resp.json();
+          // Append logs to the UI with scroll handling
+          const appendLogs = (newLogs) => {
+              let finalOutput = newLogs;
 
-            // If a job_id is returned, update the variables
-            if (fetched_job_id != null){
-              latest_job_id = fetched_job_id;
-              latest_job_name = fetched_job_name;
-              latest_job_start_time = fetched_job_start_time;
-            }
-            else {  // Kill the log update if no more jobs are found
-              return;
-            }
-
-            // Wait a bit before trying to fetch the latest job again
-            if (latest_job_id != jobId){
-              await new Promise(resolve => setTimeout(resolve, 5000));
-              continue;
-            }
-
-            // Send a request to the server to fetch the JIPipe log of the associated job
-            const logResp = await fetch(`/JIPipeRunner/fetch_jipipe_logs/${jobId}/`, {
-              credentials: 'same-origin'
-            });
-            
-            // Error handling
-            if (!logResp.ok || logResp.status === 204) {
-              // Retry fetching the log up to 5 times to allow log creation
-              if (retryCount < 5){
-                retryCount += 1;
-                await new Promise(resolve => setTimeout(resolve, 2000));
-                continue;
+              // Annotate each line with job identification if available
+              if (latest_job_name && latest_job_start_time) {
+                  finalOutput = newLogs
+                      .split('\n')
+                      .map(line => `${latest_job_name} @ ${latest_job_start_time}: ${line}`)
+                      .join('\n') + "\n";
               }
-              // After 5 retries, terminate the log output. 
-              else{
-                logOutput.textContent += `\nLog for job ${jobId} couldn't be found in log directory. Terminating log output! Log file could not be found in log directory.`;
-                finished = true;
-                continue;
-              }
-            }
 
-            // Get the status of the job and the log content
-            const { status, logs } = await logResp.json();
-
-            // Update the UI if the fetched log content is larger than before
-            if (logs.length > previousLogLength && latest_job_id === jobId) {
-              // Only add new content to the UI and update the logLength
-              const newLines = logs.slice(previousLogLength).join('\n');
-
-              // Add job identification before each line
-              const annotatedLines = newLines
-                .split('\n')
-                .map(line => `${latest_job_name} @ ${latest_job_start_time}: ${line}`);
-              const finalOutput = annotatedLines.join('\n') + "\n";
-            
               const isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 1;
               logOutput.textContent += finalOutput;
-              previousLogLength = logs.length;
 
-              // Only jump to the bottom if scrollbar was at the bottom before
-              if (isAtBottom){
-                logContainer.scrollTop = logContainer.scrollHeight;
-              }      
-            }
+              // Only scroll if previously at the bottom
+              if (isAtBottom) {
+                  logContainer.scrollTop = logContainer.scrollHeight;
+              }
+          };
 
-            // If the job status is finished or canceled, terminate log output and if not continue with it after 2 seconds
-            finished = (status != "running");
-            if (!finished) await new Promise(resolve => setTimeout(resolve, 2000));
-        }
-        }catch(err){
-          console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream!`);
-          logOutput.textContent += `${err.name} while trying to update log window: ${err.message}\nAborting log stream!`
-        }
+          // Fetch the latest job info
+          const fetchLatestJob = async () => {
+              const resp = await fetch('/JIPipeRunner/get_latest_jipipe_job/', { credentials: 'same-origin' });
+              if (!resp.ok) {
+                  const errorJSON = await resp.json();
+                  console.error(`Error ${resp.status}: ${errorJSON.error}\n${errorJSON.trace}`);
+                  logOutput.textContent += `${errorJSON.error}: Aborting log stream!\n`;
+                  return null;
+              }
+              return await resp.json();
+          };
+
+          // Fetch logs for a specific job
+          const fetchLogs = async (jobId) => {
+              const logResp = await fetch(`/JIPipeRunner/fetch_jipipe_logs/${jobId}/`, { credentials: 'same-origin' });
+
+              // Retry if logs are not ready
+              if (!logResp.ok || logResp.status === 204) {
+                  if (retryCount < 5) {
+                      retryCount++;
+                      await sleep(2000);
+                      return null;
+                  } else {
+                      logOutput.textContent += `\nLog for job ${jobId} couldn't be found in log directory. Terminating log output!`;
+                      finished = true;
+                      return null;
+                  }
+              }
+              return await logResp.json();
+          };
+
+          try {
+              // Initial message
+              logOutput.textContent = `Starting new task with JIPipe version ${jip_file_major_version}...\n\nFetching logs...\n`;
+
+              // Continue updating the log window until finished
+              while (!finished) {
+
+                  // Fetch latest job
+                  const latestJob = await fetchLatestJob();
+                  if (!latestJob) return;
+
+                  const { job_uuid: fetched_job_id, name: fetched_job_name, start_time: fetched_job_start_time } = latestJob;
+
+                  // Use info to update latest job info if available
+                  if (fetched_job_id != null) {
+                      latest_job_id = fetched_job_id;
+                      latest_job_name = fetched_job_name;
+                      latest_job_start_time = fetched_job_start_time;
+                  }
+
+                  // Fetch logs for the current job
+                  const logData = await fetchLogs(jobId);
+                  if (!logData) continue; // Retry if logs unavailable
+
+                  const { status, logs } = logData;
+
+                  // Update log output if new logs appeared
+                  if (logs.length > previousLogLength && latest_job_id === jobId) {
+                      const newLines = logs.slice(previousLogLength).join('\n');
+                      appendLogs(newLines);
+                      previousLogLength = logs.length;
+                  }
+
+                  // Abort log stream if no more jobs are available
+                  if (fetched_job_id == null) return;
+                  
+                  // Check if job is finished
+                  finished = (status != "running");
+
+                  // Wait before sending new fetch requests to the server
+                  await sleep(latest_job_id !== jobId ? 5000 : 2000);
+              }
+          } catch (err) {
+              console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream!`);
+              if (latest_job_id === jobId) {
+                  logOutput.textContent += `${err.name} while trying to update log window: ${err.message}\nAborting log stream!`;
+              }
+          } finally {
+              // Final log message
+              if (latest_job_id === jobId) {
+                  const isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 1;
+                  logOutput.textContent += "\n========= End of log stream =========\n";
+                  if (isAtBottom) {
+                      logContainer.scrollTop = logContainer.scrollHeight;
+                  }
+              }
+          }
       }
       
       /**
