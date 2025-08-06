@@ -66,6 +66,10 @@ fi
 
 sudo chown -R "$OMERO_USER":"$OMERO_USER" "$CURRENT_DIR"
 
+# === INSTALL PYTHON REQUIREMENTS ===
+echo "Installing python requirements..."
+"$OMERO_BIN_PATH/pip" install -r requirements.txt
+
 run_as_omero-web() {
     sudo -u "$OMERO_USER" env PATH="$OMERO_BIN_PATH:$PATH" OMERODIR="$OMERODIR" "$@"
 }
@@ -103,7 +107,7 @@ fi
 
 # === INSTALL JIPIPERUNNER ===
 echo "Installing OMERO plugin..."
-if run_as_omero-web pip show "JIPipeRunner" > /dev/null 2>&1; then
+if "$OMERO_BIN_PATH/pip" show "JIPipeRunner" > /dev/null 2>&1; then
     read -p "Plugin 'JIPipeRunner' is already installed. Do you want to reinstall it? [y/n] " REINSTALL_ANSWER
 
     while [[ "$REINSTALL_ANSWER" != "n" && "$REINSTALL_ANSWER" != "y" ]]; do
@@ -112,10 +116,10 @@ if run_as_omero-web pip show "JIPipeRunner" > /dev/null 2>&1; then
     done
 
     if [ "$REINSTALL_ANSWER" = "y" ]; then
-        run_as_omero-web pip install --upgrade --force-reinstall "$CURRENT_DIR"
+        "$OMERO_BIN_PATH/pip" install --upgrade --force-reinstall "$CURRENT_DIR"
     fi
 else
-    run_as_omero-web pip install "$CURRENT_DIR"
+    "$OMERO_BIN_PATH/pip" install "$CURRENT_DIR"
 fi
 
 # === CONFIGURE OMERO WEB ===
