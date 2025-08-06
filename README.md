@@ -39,7 +39,7 @@ This plugin is designed to work with **JIPipe**, developed by **Ruman Gerst and 
 
 This plugin assumes that [omero-web](https://github.com/ome/omero-web) has been setup as described in its [documentation](https://omero.readthedocs.io/en/stable/sysadmins/unix/install-web/web-deployment). To ease the installation process of the plugin, a bash script is provided in the repository. For manual installation, check the [guide for manual installation](ManualInstallationGuide.md).
 
-### Step 0
+### Step 1 - Install docker
 Docker is required for the plugin to run. So be sure to install it according to the [docker documentation](https://docs.docker.com/engine/install/) before starting the installation process.
 
 Additionally, the omero-web user needs to be part of the docker group. You can test this by running:
@@ -57,28 +57,28 @@ and restart to apply:
 sudo systemctl restart omero-web
 ```
 
-### Step 1
+### Step 2 - Clone the repository
 Clone the repository and navigate to the folder:
 ```bash
-git clone https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
+git clone -b dockerized_jipipe https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
 cd OMERO_JIPipe_Plugin
 ```
 
-### Step 2
-Install the required python libraries using the requirements.txt:
-```bash
-pip install -r requirements.txt
-```
+### Step 3 - Setup redis as cache backend
+>**You may ignore this step if you have redis already setup as your caching backend**
 
-### Step 3
-Setup redis if you have not done so before. If you already have it setup (even at another location) you can ignore this step:
+First, install redis-server and start the service as the root user:
 ```bash
+apt-get install -y redis-server
 service redis-server start
+```
+Then, as the omero-web system user, edit the omero cache config to point to your redis server location:
+```bash
 omero config set omero.web.caches '{"default": {"BACKEND": "django_redis.cache.RedisCache", "LOCATION": "redis://127.0.0.1:6379/0"}}'
 ```
 >⚠️ **Be sure your omero setup does not depend on other caching methods** ⚠️
 
-### Step 4
+### Step 4 - Install JIPipeRunner
 Run the bash script as omero-web with sudo privileges or as root:
 ```bash
 sudo bash installJIPipeRunner.sh
