@@ -28,116 +28,11 @@ param job_uuid: Unique identifier for the JIPipe job
 param omero_user_name: Username of the OMERO user running the job
 param jipipe_log_file_path: Path to the log file for the JIPipe job
 """
-@shared_task(bind=True)
-def run_jipipe_task(self, jipipe_project_config, parameter_override_json, job_uuid, omero_user_name, jipipe_log_file_path, major_version):
-
-    # Initialize logging
-    log = logging.getLogger(__name__)
-
-    # Create temporary directories for handling input and output
-    temp_input = tempfile.mkdtemp()
-    temp_output = tempfile.mkdtemp()
-
-    # Create process variable
-    process = None
-
-    try:
-        # Save the JIPipe project configuration to a file to access it via ImageJ CLI
-        jip_project_file_path = Path(temp_input) / 'JIPipeProject.jip'
-        with open(jip_project_file_path, 'w') as f:
-            json.dump(jipipe_project_config, f)
-
-        # Save the JIPipe project parameter override to a file to access it via ImageJ CLI
-        jip_parameter_override_file_path = Path(temp_input) / 'JIPipeProject_Parameter_Override.json'
-        with open(jip_parameter_override_file_path, 'w') as f:
-            json.dump(parameter_override_json, f)
-
-        # Get the ImageJ path from the OMERO configuration to run JIPipe on
-        cfg_file = os.path.join(os.environ["OMERODIR"], "etc", "grid", "config.xml")
-        cfg = ConfigXml(cfg_file, read_only=True)
-        imagej_path = cfg.as_map().get("omero.web.imagej")
-
-        # Define the command to run JIPipe using ImageJ CLI
-        # TODO: Make memory configurable
-        command = [
-            'xvfb-run', '-a', imagej_path,
-            '-Dorg.apache.logging.log4j.simplelog.StatusLogger.level=ERROR',
-            '-Dorg.apache.logging.log4j.simplelog.level=ERROR',
-            '--memory', '8G',
-            '--pass-classpath', '--full-classpath',
-            '--main-class', 'org.hkijena.jipipe.cli.JIPipeCLIMain',
-            'run', '--project', str(jip_project_file_path),
-            '--output-folder', temp_output, 
-            '--overwrite-parameters', str(jip_parameter_override_file_path)
-        ]
-
-        # Add --fast-init to command if version is supporting it 
-        if major_version >= 5:
-            command.append('--fast-init')
-
-        # Run the command and log the output
-        with open(jipipe_log_file_path, 'w') as log_file:
-            log_file.write("Executable ImageJ at: " + imagej_path + "\n")
-
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                preexec_fn=os.setsid,
-            )
-
-            # Write the output of the process to the log file
-            for line in process.stdout:
-                log_file.write(line)
-                log_file.flush()
-
-            # Wait for the process to complete
-            process.wait()
-
-    except KeyboardInterrupt:
-        # On receiving SIGTERM terminate the process if one was defined
-        if process:
-            os.killpg(process.pid, signal.SIGTERM)
-        
-    except Exception as e:
-        # Log any exceptions that occur during the task and throw an exception in OMERO log
-        with open(jipipe_log_file_path, 'a') as log_file:
-            log_file.write(f"\nERROR in JIPipe background job: {e}\n")
-        log.exception("Error in Celery JIPipe task")
-
-    finally:
-        # Close cfg and clean up cache and temporary directories
-        cfg.close()
-        user_key = f"active_jipipe_jobs_{omero_user_name}"
-        active = cache.get(user_key, [])
-        active = [job for job in active if job["job_uuid"] != job_uuid]
-        cache.set(user_key, active, timeout=None)
-        safe_rmtree(temp_input)
-        safe_rmtree(temp_output)
-
-# Helper function that makes the rmtree call more resilient
-def safe_rmtree(path, retries=3, delay=1):
-    for i in range(retries):
-        try:
-            shutil.rmtree(path)
-            return
-        except OSError as e:
-            if i < retries - 1:
-                time.sleep(delay)
-            else:
-                raise e
-
 @shared_task(bind=True, acks_late=True)
-def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int | None = None):
+def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None):
 
     # Initialize logging
     log = logging.getLogger(__name__)
-
-    # Create temporary directories for handling input and output
-    temp_input = tempfile.mkdtemp()
-    temp_output = tempfile.mkdtemp()
 
     # Empty container variable
     container = None
@@ -152,15 +47,17 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             json.dumps(parameter_override_json)
         )
 
+        Path("/tmp/jipipe-data").mkdir(parents=True, exist_ok=True)
+
         # Run the container on the image corresponding to the JIPipe version
-        image   = f"mariuswank/jipipe_headless:{jipipe_version}"
+        image   = f"appsysbiohkijena/jipipe:{jipipe_version}.0.0"
         name    = f"jipipe-{jipipe_version}-{job_uuid[:8]}"
 
         command = [
             "run",
-            "--project",              "/work/input/JIPipeProject.jip",
-            "--overwrite-parameters", "/work/input/JIPipeProject_Parameter_Override.json",
-            "--output-folder",        "/work/output",
+            "--project",              f"{temp_input}/JIPipeProject.jip",
+            "--overwrite-parameters", f"{temp_input}/JIPipeProject_Parameter_Override.json",
+            "--output-folder",        f"{temp_output}",
         ]
 
         uid = os.getuid()
@@ -172,11 +69,12 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             name=name,
             detach=True,
             auto_remove=False,
-            network_mode="host",
             user=f"{uid}:{gid}",
+            network_mode="host",
             volumes={
-                str(temp_input) : {"bind": "/work/input",  "mode": "ro"},
-                str(temp_output): {"bind": "/work/output", "mode": "rw"},
+                str(temp_input) : {"bind": temp_input,  "mode": "rw"},
+                str(temp_output): {"bind": temp_output, "mode": "rw"},
+                "/tmp/jipipe-data": {"bind": "/data", "mode": "rw"}
             },
             stdout=True,
             stderr=True
@@ -215,5 +113,3 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         active = cache.get(user_key, [])
         active = [job for job in active if job["job_uuid"] != job_uuid]
         cache.set(user_key, active, timeout=None)
-        safe_rmtree(temp_input)
-        safe_rmtree(temp_output)

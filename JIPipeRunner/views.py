@@ -7,21 +7,32 @@ import signal
 import uuid
 from typing import Optional
 import traceback
+import tempfile
+import contextlib
+import fnmatch
+import io
+import re
+import shutil
 
 from django.conf import settings
 from django.core.cache import cache
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
+from django.views.decorators.csrf import csrf_protect
 
 from JIPipePlugin.celery import app
-from JIPipeRunner.tasks import run_jipipe_task, run_jipipe_ephemeral
+from JIPipeRunner.tasks import run_jipipe_ephemeral
 from celery.result import AsyncResult
 
 import omero
 import omero.model
 from omero.rtypes import rstring
 from omeroweb.decorators import login_required
+from omero.plugins.export import ExportControl
+from omero.cli import CLI, NonZeroReturnCode
+import omero.model as omodel
+from omero.model import ProjectI
 
 
 # Directory where JIPipe log files are stored (customize via Django settings)
@@ -73,6 +84,8 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
         custom_output_config_enabled = json_request.get('custom_output_config_enabled', False)
         major_version = json_request.get('major_version')
+        temp_input = json_request.get('input_path')
+        temp_output = json_request.get('output_path')
 
         # TODO: Validate the JIPipe JSON structure here for security and correctness
 
@@ -95,7 +108,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
         run_jipipe_ephemeral.apply_async(
-            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file, major_version],
+            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output],
             task_id=job_uuid,
             ignore_result=True,
         )
@@ -508,3 +521,298 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
     # Get the ID of the newly created project and return the Project object
     new_id = saved_model.getId().getValue()
     return conn.getObject('Project', new_id)
+
+def create_temp_directories(request) -> JsonResponse:
+    
+    # Create temporary directories for handling input and output
+    temp_input = tempfile.mkdtemp()
+    temp_output = tempfile.mkdtemp()
+
+    return JsonResponse({'temp_input': temp_input, 'temp_output': temp_output})
+
+@require_POST
+def create_temp_subdirectories(request) -> JsonResponse:
+
+    # Get the uuid lists from the request
+    json_request = json.loads(request.body.decode('utf-8'))
+    parent_path = json_request.get('parent_path')
+    uuid = json_request.get('uuid')
+
+    # Create subdirectory
+    sub_path = os.path.join(parent_path, uuid)
+    os.makedirs(sub_path, exist_ok=True)
+
+    return JsonResponse({'sub_path': sub_path}, status=201)
+
+@require_POST
+@csrf_protect
+def remove_temp_directories(request):
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        dirs = payload.get("temp_directories", [])
+        if not isinstance(dirs, list):
+            return JsonResponse({"error": "temp_directories must be a list"})
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON payload"})
+
+    deleted, skipped, errors = [], [], []
+
+    for raw in dirs:
+        try:
+            path = os.path.abspath(str(raw))
+
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+                deleted.append(path)
+            else:
+                skipped.append({"path": raw, "reason": "not a directory"})
+        except Exception as e:
+            errors.append({"path": raw, "error": str(e)})
+
+    status = 207 if errors else 200
+    return JsonResponse({"deleted": deleted, "skipped": skipped, "errors": errors}, status=status)
+
+@require_POST
+@login_required()
+def download_input(request, conn=None, **kwargs):
+    try:
+        try:
+            payload = json.loads(request.body.decode('utf-8'))
+        except Exception as e:
+            return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
+
+        out_dir = payload['path']
+        dataset_id = int(payload['dataset_id'])
+
+        if conn is None:
+            return JsonResponse({'error': 'No OMERO connection'}, status=401)
+
+        os.makedirs(out_dir, exist_ok=True)
+
+        dataset = conn.getObject("Dataset", dataset_id)
+        if dataset is None:
+            return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
+
+        downloaded_files = 0
+        processed_images = 0
+        downloads = []
+        errors = []
+
+        for img in dataset.listChildren():
+            processed_images += 1
+            fileset = img.getFileset()
+            if fileset is None:
+                errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to download).'})
+                continue
+
+            # Mirror the CLI `omero download Image:<id> <dir>` behavior:
+            # keep the relative path under the Fileset’s template prefix.
+            template_prefix = fileset.getTemplatePrefix() or ""
+
+            for ofile in fileset.listFiles():
+                try:
+                    rel_dir = ofile.path.replace(template_prefix, "", 1)
+                    target_dir = os.path.join(out_dir, rel_dir)
+                    os.makedirs(target_dir, exist_ok=True)
+
+                    target_path = os.path.join(target_dir, ofile.name)
+
+                    if not os.path.exists(target_path):
+                        # `conn.c.download(OriginalFile, local_path)` downloads the binary
+                        conn.c.download(ofile._obj, target_path)
+                        downloaded_files += 1
+
+                    downloads.append({
+                        'image_id': img.id,
+                        'file_name': ofile.name,
+                        'saved_to': target_path
+                    })
+
+                except Exception as e:
+                    errors.append({
+                        'image_id': img.id,
+                        'file_name': getattr(ofile, 'name', None),
+                        'error': str(e)
+                    })
+
+        status = 200 if not errors else 207  # 207 = partial success
+        return JsonResponse({
+            'dataset_id': dataset_id,
+            'processed_images': processed_images,
+            'downloaded_files': downloaded_files,
+            'downloads': downloads,
+            'errors': errors
+        }, status=status)
+
+    except KeyError as e:
+        return JsonResponse({'error': f'Missing key {e} in request JSON'}, status=400)
+    except BaseException as e:
+        return JsonResponse({'error': f'{e}', 'trace': traceback.format_exc()}, status=500)
+    
+
+@require_POST
+@login_required()
+def upload_output(request, conn=None, **kwargs):
+    """
+    POST JSON:
+    {
+      "path": "/abs/path/to/dir",
+      "project_id": 123,
+      "dataset_name": "My New Dataset",   // optional; defaults to basename(path)
+      "recursive": true,                  // optional (default true)
+      "patterns": ["*.tif","*.czi"],     // optional; omit = all files
+      "dry_run": false                    // optional
+    }
+    Behavior:
+      - Creates (or reuses) Dataset in Project
+      - Imports files as Images into that Dataset using embedded CLI bound to current conn
+      - No session ID string and no username/password required
+      - Uses per-call Ice context to set the group (works across OMERO versions)
+    """
+    DEFAULT_PROJECT_NAME = "JipipeResultsDefault"
+    try:
+        # Parse body
+        try:
+            payload = json.loads(request.body.decode("utf-8"))
+        except Exception as e:
+            return JsonResponse({"error": f"Invalid JSON: {e}"}, status=400)
+
+        root_dir     = payload["path"]
+        project_id   = int(payload["project_id"])
+        dataset_name = payload.get("dataset_name") or os.path.basename(os.path.abspath(root_dir)) or "Imported Dataset"
+        recursive    = bool(payload.get("recursive", True))
+        patterns     = payload.get("patterns")
+        dry_run      = bool(payload.get("dry_run", False))
+        temp_output = payload.get("temp_output")
+
+        if conn is None:
+            return JsonResponse({"error": "No OMERO connection"}, status=401)
+        if not os.path.isdir(root_dir):
+            return JsonResponse({"error": f"Path not found or not a directory: {root_dir}"}, status=400)
+
+        # Ensure project exists
+        project = conn.getObject("Project", project_id)
+        if project is None:
+            # Try to find an existing default project by name (in current group context)
+            default_project = next(conn.getObjects("Project", attributes={'name': DEFAULT_PROJECT_NAME}), None)
+
+            if default_project is None:
+                # Create a new default project
+                pr = ProjectI()
+                pr.setName(rstring(DEFAULT_PROJECT_NAME))
+                pr = conn.getUpdateService().saveAndReturnObject(pr)  # saved in current group/security context
+                project = conn.getObject("Project", pr.id.val)        # wrap as gateway object
+            else:
+                project = default_project
+        
+            # From here on, use this project
+            project_id = project.getId()
+
+        # ---- Per-call Ice context: force saves into the project's group ----
+        gid = project.getDetails().group.id.val
+        ctx = {"omero.group": str(gid)}  # <- key bit; no SecurityContext/ServiceOptions needed
+        u = conn.c.sf.getUpdateService()  # raw proxy so we can pass _ctx explicitly
+        # -------------------------------------------------------------------
+
+        # Ensure (or create) dataset in project using per-call context
+        ds_obj = None
+        for d in project.listChildren():
+            if d.getName() == dataset_name:
+                ds_obj = d
+                break
+        if ds_obj is None:
+            ds_m = omodel.DatasetI()
+            ds_m.setName(rstring(dataset_name))
+            ds_m.setDescription(rstring(f"Bulk import from {root_dir}"))
+            ds_m = u.saveAndReturnObject(ds_m, _ctx=ctx)
+
+            link = omodel.ProjectDatasetLinkI()
+            link.setParent(project._obj)
+            link.setChild(ds_m)
+            u.saveAndReturnObject(link, _ctx=ctx)
+
+            dataset_id = ds_m.id.val
+        else:
+            dataset_id = ds_obj.getId()
+
+        # Gather candidate files
+        candidates = _gather_files(root_dir, recursive=recursive, patterns=patterns)
+        if not candidates:
+            return JsonResponse({"error": "No matching files to import."}, status=400)
+
+        # Embedded CLI bound to this connection (no creds/session string)
+        cli = CLI()
+        cli.loadplugins()
+        cli.set_client(conn.c)
+
+        results, errors = [], []
+        imported = 0
+        skipped = 0
+
+        # Import per file; ensure importer runs in same group via -g
+        for fpath in candidates:
+            args = ["import", "-g", str(gid), "-T", f"Dataset:{dataset_id}", "--no-upgrade-check", fpath]
+            if dry_run:
+                results.append({
+                    "file": fpath,
+                    "dataset_id": dataset_id,
+                    "dataset_name": dataset_name,
+                    "args": " ".join(args),
+                    "status": "dry_run"
+                })
+                skipped += 1
+                continue
+
+            buf_out, buf_err = io.StringIO(), io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+                    cli.invoke(args, strict=True)
+                out = buf_out.getvalue()
+                imported += 1
+                m = re.search(r"Image:(\d+)", out) or re.search(r"Imported\s+image\s+id:(\d+)", out, re.I)
+                image_id = int(m.group(1)) if m else None
+                results.append({"file": fpath, "image_id": image_id, "stdout": out.strip()})
+            except NonZeroReturnCode:
+                err = buf_err.getvalue() or buf_out.getvalue()
+                errors.append({"file": fpath, "stderr": (err or "").strip()})
+            except Exception as e:
+                errors.append({"file": fpath, "error": str(e)})
+
+        status = 200 if not errors else 207
+        return JsonResponse({
+            "project_id": project_id,
+            "dataset_id": dataset_id,
+            "dataset_name": dataset_name,
+            "root_dir": root_dir,
+            "recursive": recursive,
+            "patterns": patterns,
+            "files_considered": len(candidates),
+            "files_imported": imported,
+            "files_skipped": skipped,
+            "results": results,
+            "errors": errors
+        }, status=status)
+
+    except KeyError as e:
+        return JsonResponse({"error": f"Missing key {e} in request JSON"}, status=400)
+    except BaseException as e:
+        return JsonResponse({"error": f"{e}", "trace": traceback.format_exc()}, status=500)
+    finally:
+        shutil.rmtree(temp_output)
+
+
+# Helper function to go through files
+def _gather_files(root_dir, recursive=True, patterns=None):
+    if not recursive:
+        files = [os.path.join(root_dir, f) for f in os.listdir(root_dir)
+                 if os.path.isfile(os.path.join(root_dir, f))]
+        if patterns:
+            files = [p for p in files
+                     if any(fnmatch.fnmatch(os.path.basename(p), pat) for pat in patterns)]
+        return list(dict.fromkeys(files))
+    out = []
+    for base, _, fs in os.walk(root_dir):
+        for f in fs:
+            if not patterns or any(fnmatch.fnmatch(f, pat) for pat in patterns):
+                out.append(os.path.join(base, f))
+    return list(dict.fromkeys(out))

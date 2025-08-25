@@ -12,4 +12,9 @@ urlpatterns = [
     path("list_available_datasets/", views.list_available_datasets, name="list_available_datasets"),
     path("list_available_projects/", views.list_available_projects, name="list_available_projects"),
     path("get_latest_jipipe_job/", views.get_latest_jipipe_job, name="get_latest_jipipe_job"),
+    path("create_temp_directories/", views.create_temp_directories, name="create_temp_directories"),
+    path("create_temp_subdirectories/", views.create_temp_subdirectories, name="create_temp_subdirectories"),
+    path("download_input/", views.download_input, name="download_input"),
+    path("upload_output/", views.upload_output, name="upload_output"),
+    path("remove_temp_directories/", views.remove_temp_directories, name="remove_temp_directories"),
 ]
