@@ -47,6 +47,10 @@ DEBUG = False
 
 ALLOWED_HOSTS = ["*"]
 
+JIPIPE_TEMP_DIR = "/tmp/jipipe-runner/data"
+
+LOG_DIR = '/tmp/jipipe-runner/logs'
+
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 SECURE_SSL_REDIRECT = True

@@ -14,7 +14,7 @@ import io
 import re
 import shutil
 
-from django.conf import settings
+from JIPipePlugin import settings
 from django.core.cache import cache
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import render
@@ -34,10 +34,12 @@ from omero.cli import CLI, NonZeroReturnCode
 import omero.model as omodel
 from omero.model import ProjectI
 
-
 # Directory where JIPipe log files are stored (customize via Django settings)
-LOG_DIR = getattr(settings, 'JIPIPE_LOG_ROOT', '/tmp/jipipe/logs')
+LOG_DIR = settings.LOG_DIR or '/tmp/jipipe/logs'
 os.makedirs(LOG_DIR, exist_ok=True)
+
+JIPIPE_TEMP_DIR = settings.JIPIPE_TEMP_DIR or '/tmp'
+os.makedirs(JIPIPE_TEMP_DIR, exist_ok=True)
 
 # Time (in seconds) to keep PIDs in cache before expiring (None == never expire)
 CACHE_TIMEOUT: Optional[int] = None
@@ -523,10 +525,10 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
     return conn.getObject('Project', new_id)
 
 def create_temp_directories(request) -> JsonResponse:
-    
+
     # Create temporary directories for handling input and output
-    temp_input = tempfile.mkdtemp()
-    temp_output = tempfile.mkdtemp()
+    temp_input = tempfile.mkdtemp(dir=JIPIPE_TEMP_DIR)
+    temp_output = tempfile.mkdtemp(dir=JIPIPE_TEMP_DIR)
 
     return JsonResponse({'temp_input': temp_input, 'temp_output': temp_output})
 
@@ -582,62 +584,63 @@ def download_input(request, conn=None, **kwargs):
             return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
 
         out_dir = payload['path']
-        dataset_id = int(payload['dataset_id'])
+        dataset_ids = [int(x.strip()) for x in payload['dataset_id'].split(",")]
 
         if conn is None:
             return JsonResponse({'error': 'No OMERO connection'}, status=401)
 
         os.makedirs(out_dir, exist_ok=True)
 
-        dataset = conn.getObject("Dataset", dataset_id)
-        if dataset is None:
-            return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
-
         downloaded_files = 0
         processed_images = 0
         downloads = []
         errors = []
 
-        for img in dataset.listChildren():
-            processed_images += 1
-            fileset = img.getFileset()
-            if fileset is None:
-                errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to download).'})
-                continue
+        for dataset_id in dataset_ids:
+            dataset = conn.getObject("Dataset", dataset_id)
+            if dataset is None:
+                return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
 
-            # Mirror the CLI `omero download Image:<id> <dir>` behavior:
-            # keep the relative path under the Fileset’s template prefix.
-            template_prefix = fileset.getTemplatePrefix() or ""
+            for img in dataset.listChildren():
+                processed_images += 1
+                fileset = img.getFileset()
+                if fileset is None:
+                    errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to download).'})
+                    continue
 
-            for ofile in fileset.listFiles():
-                try:
-                    rel_dir = ofile.path.replace(template_prefix, "", 1)
-                    target_dir = os.path.join(out_dir, rel_dir)
-                    os.makedirs(target_dir, exist_ok=True)
+                # Mirror the CLI `omero download Image:<id> <dir>` behavior:
+                # keep the relative path under the Fileset’s template prefix.
+                template_prefix = fileset.getTemplatePrefix() or ""
 
-                    target_path = os.path.join(target_dir, ofile.name)
+                for ofile in fileset.listFiles():
+                    try:
+                        rel_dir = ofile.path.replace(template_prefix, "", 1)
+                        target_dir = os.path.join(out_dir, rel_dir)
+                        os.makedirs(target_dir, exist_ok=True)
 
-                    if not os.path.exists(target_path):
-                        # `conn.c.download(OriginalFile, local_path)` downloads the binary
-                        conn.c.download(ofile._obj, target_path)
-                        downloaded_files += 1
+                        target_path = os.path.join(target_dir, ofile.name)
 
-                    downloads.append({
-                        'image_id': img.id,
-                        'file_name': ofile.name,
-                        'saved_to': target_path
-                    })
+                        if not os.path.exists(target_path):
+                            # `conn.c.download(OriginalFile, local_path)` downloads the binary
+                            conn.c.download(ofile._obj, target_path)
+                            downloaded_files += 1
 
-                except Exception as e:
-                    errors.append({
-                        'image_id': img.id,
-                        'file_name': getattr(ofile, 'name', None),
-                        'error': str(e)
-                    })
+                        downloads.append({
+                            'image_id': img.id,
+                            'file_name': ofile.name,
+                            'saved_to': target_path
+                        })
+
+                    except Exception as e:
+                        errors.append({
+                            'image_id': img.id,
+                            'file_name': getattr(ofile, 'name', None),
+                            'error': str(e)
+                        })
 
         status = 200 if not errors else 207  # 207 = partial success
         return JsonResponse({
-            'dataset_id': dataset_id,
+            'dataset_ids': dataset_ids,
             'processed_images': processed_images,
             'downloaded_files': downloaded_files,
             'downloads': downloads,
@@ -649,7 +652,6 @@ def download_input(request, conn=None, **kwargs):
     except BaseException as e:
         return JsonResponse({'error': f'{e}', 'trace': traceback.format_exc()}, status=500)
     
-
 @require_POST
 @login_required()
 def upload_output(request, conn=None, **kwargs):
@@ -661,7 +663,6 @@ def upload_output(request, conn=None, **kwargs):
       "dataset_name": "My New Dataset",   // optional; defaults to basename(path)
       "recursive": true,                  // optional (default true)
       "patterns": ["*.tif","*.czi"],     // optional; omit = all files
-      "dry_run": false                    // optional
     }
     Behavior:
       - Creates (or reuses) Dataset in Project
@@ -682,8 +683,6 @@ def upload_output(request, conn=None, **kwargs):
         dataset_name = payload.get("dataset_name") or os.path.basename(os.path.abspath(root_dir)) or "Imported Dataset"
         recursive    = bool(payload.get("recursive", True))
         patterns     = payload.get("patterns")
-        dry_run      = bool(payload.get("dry_run", False))
-        temp_output = payload.get("temp_output")
 
         if conn is None:
             return JsonResponse({"error": "No OMERO connection"}, status=401)
@@ -740,43 +739,51 @@ def upload_output(request, conn=None, **kwargs):
         if not candidates:
             return JsonResponse({"error": "No matching files to import."}, status=400)
 
-        # Embedded CLI bound to this connection (no creds/session string)
-        cli = CLI()
-        cli.loadplugins()
-        cli.set_client(conn.c)
+        # Build a single import command for ALL files
+        base_args = [
+            "import",
+            "-g", str(gid),
+            "-T", f"Dataset:{dataset_id}",
+            "--no-upgrade-check",
+        ]
+        full_args = base_args + candidates
 
+        # Invoke ONCE with the embedded client
+        buf_out, buf_err = io.StringIO(), io.StringIO()
         results, errors = [], []
         imported = 0
-        skipped = 0
 
-        # Import per file; ensure importer runs in same group via -g
-        for fpath in candidates:
-            args = ["import", "-g", str(gid), "-T", f"Dataset:{dataset_id}", "--no-upgrade-check", fpath]
-            if dry_run:
+        try:
+            cli = CLI()
+            cli.loadplugins()
+            cli.set_client(conn.c)  # attach the current connection ONCE
+            with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+                cli.invoke(full_args, strict=True)
+
+            # Count number of imported files
+            for fpath in candidates:
                 results.append({
-                    "file": fpath,
-                    "dataset_id": dataset_id,
-                    "dataset_name": dataset_name,
-                    "args": " ".join(args),
-                    "status": "dry_run"
+                    "file": fpath
                 })
-                skipped += 1
-                continue
-
-            buf_out, buf_err = io.StringIO(), io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-                    cli.invoke(args, strict=True)
-                out = buf_out.getvalue()
                 imported += 1
-                m = re.search(r"Image:(\d+)", out) or re.search(r"Imported\s+image\s+id:(\d+)", out, re.I)
-                image_id = int(m.group(1)) if m else None
-                results.append({"file": fpath, "image_id": image_id, "stdout": out.strip()})
-            except NonZeroReturnCode:
-                err = buf_err.getvalue() or buf_out.getvalue()
-                errors.append({"file": fpath, "stderr": (err or "").strip()})
-            except Exception as e:
-                errors.append({"file": fpath, "error": str(e)})
+
+        except NonZeroReturnCode:
+            # Whole-run failure: surface importer stderr
+            err = buf_err.getvalue() or buf_out.getvalue()
+            return JsonResponse({
+                "error": (err or "").strip(),
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+                "root_dir": root_dir,
+                "recursive": recursive,
+                "patterns": patterns,
+            }, status=500)
+        except Exception as e:
+            return JsonResponse({
+                "error": str(e),
+                "trace": traceback.format_exc()
+            }, status=500)
 
         status = 200 if not errors else 207
         return JsonResponse({
@@ -788,20 +795,18 @@ def upload_output(request, conn=None, **kwargs):
             "patterns": patterns,
             "files_considered": len(candidates),
             "files_imported": imported,
-            "files_skipped": skipped,
+            "files_skipped": len(candidates) - imported,
             "results": results,
-            "errors": errors
+            "errors": errors,
+            "stdout": buf_out.getvalue().strip(),   # optional: helpful for logs
+            "stderr": buf_err.getvalue().strip(),   # optional
         }, status=status)
 
     except KeyError as e:
         return JsonResponse({"error": f"Missing key {e} in request JSON"}, status=400)
     except BaseException as e:
         return JsonResponse({"error": f"{e}", "trace": traceback.format_exc()}, status=500)
-    finally:
-        shutil.rmtree(temp_output)
 
-
-# Helper function to go through files
 def _gather_files(root_dir, recursive=True, patterns=None):
     if not recursive:
         files = [os.path.join(root_dir, f) for f in os.listdir(root_dir)

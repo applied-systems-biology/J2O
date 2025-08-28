@@ -9,24 +9,21 @@ from django.conf import settings
 import docker
 from docker.errors import ImageNotFound, NotFound
 
-# Turn SIGTERM into KeyboardInterrupt so it can be caught by the task (necessary to shutdown child processes)
-signal.signal(signal.SIGTERM, lambda signum, frame: (_ for _ in ()).throw(KeyboardInterrupt()))
-
 # Directory where JIPipe log files are stored (customize via Django settings)
 LOG_DIR = getattr(settings, 'JIPIPE_LOG_ROOT', '/tmp/jipipe/logs')
 os.makedirs(LOG_DIR, exist_ok=True)
 
 """
-This task runs a JIPipe project in the background using ImageJ CLI.
-It creates temporary directories for input and output, runs the JIPipe 
-project using xvfb-run to handle GUI elements, and logs the output to a 
-specified log file. When the task is interrupted or fails, it cleans up 
-the temporary directories and logs the error.
+This task runs an ephemeral docker container that will execute the provided .jip file using JIPipe.
+It utilizes a temporary filesystem for input/output handling and will update the redis cache to track active tasks.
+After it finishes, the container is removed, but the output will in the temporary filesystem until it is uploaded to OMERO later on.
 
-param jipipe_project_config: JSON configuration of the JIPipe project
+param jipipe_project_config: JSON configuration of the JIPipe project (the contents of the selected .jip file)
 param job_uuid: Unique identifier for the JIPipe job
-param omero_user_name: Username of the OMERO user running the job
+param omero_user_name: Username of the OMERO user running the job for tracking ownership of jobs
 param jipipe_log_file_path: Path to the log file for the JIPipe job
+param temp_input: Path to the temporary input directory in the filesystem to store JIPipe input
+param temp_output: Path to the temporary output directory in the filesystem to store JIPipe output
 """
 @shared_task(bind=True, acks_late=True)
 def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None):
