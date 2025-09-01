@@ -27,7 +27,7 @@ from celery.result import AsyncResult
 
 import omero
 import omero.model
-from omero.rtypes import rstring
+from omero.rtypes import rstring, rlong
 from omeroweb.decorators import login_required
 from omero.plugins.export import ExportControl
 from omero.cli import CLI, NonZeroReturnCode
@@ -130,7 +130,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         active.append(job_info)
         cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-        return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': start_time})
+        return JsonResponse({'job_id': job_uuid, 'job_name': jip_file_name, 'job_start_time': start_time, 'log_file_path': log_file})
     
     except Exception as e:
         logger.exception("Exception while starting JIPipe job")
@@ -243,17 +243,17 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
     """
     try:
         # Get the log file from LOG_DIR using the job UUID
-        log_file = "an/imaginary/path/that/does/not/exist"
+        log_file_path = None
         for file in os.listdir(LOG_DIR):
             if job_uuid in file:
-                log_file = os.path.join(LOG_DIR, file)
+                log_file_path = os.path.join(LOG_DIR, file)
         
         # Raise an error if the log file does not exist
-        if not os.path.exists(log_file):
+        if not os.path.exists(log_file_path):
             return JsonResponse({"status": "pending", "logs": []}, status=204)
 
         # Get the log lines from the file to return them
-        with open(log_file, 'r') as file_handle:
+        with open(log_file_path, 'r') as file_handle:
             log_lines = file_handle.read().splitlines()
         
         # Check if the job is still active by looking in the cache
@@ -683,6 +683,7 @@ def upload_output(request, conn=None, **kwargs):
         dataset_name = payload.get("dataset_name") or os.path.basename(os.path.abspath(root_dir)) or "Imported Dataset"
         recursive    = bool(payload.get("recursive", True))
         patterns     = payload.get("patterns")
+        log_path = payload.get("log_file_path")
 
         if conn is None:
             return JsonResponse({"error": "No OMERO connection"}, status=401)
@@ -733,6 +734,46 @@ def upload_output(request, conn=None, **kwargs):
             dataset_id = ds_m.id.val
         else:
             dataset_id = ds_obj.getId()
+
+
+        # ---- Attach log.txt to the Dataset using ONLY raw services + the same ctx ----
+        if log_path and os.path.isfile(log_path):
+            # 1) Create an OriginalFile in the target group
+            of = omodel.OriginalFileI()
+            of.setName(rstring(os.path.basename(log_path)))
+            of.setPath(rstring("/"))  # logical server-side path; avoid local absolute paths here
+            of.setSize(rlong(os.path.getsize(log_path)))
+            of.setMimetype(rstring("text/plain"))
+            of = u.saveAndReturnObject(of, _ctx=ctx)  # IMPORTANT: saved with proper group
+
+            # 2) Upload bytes via RawFileStore (note: use createRawFileStore)
+            rfs = conn.c.sf.createRawFileStore()
+            try:
+                rfs.setFileId(of.getId().getValue(), _ctx=ctx)
+                with open(log_path, "rb") as fh:
+                    offset = 0
+                    while True:
+                        chunk = fh.read(64 * 1024)
+                        if not chunk:
+                            break
+                        rfs.write(chunk, offset, len(chunk), _ctx=ctx)
+                        offset += len(chunk)
+                rfs.save(_ctx=ctx)
+            finally:
+                rfs.close()
+
+            # 3) Create FileAnnotation referencing the OriginalFile
+            fa = omodel.FileAnnotationI()
+            fa.setFile(omodel.OriginalFileI(of.getId().getValue(), False))
+            fa.setNs(rstring("omero.jipipe/log"))  # optional namespace
+            fa = u.saveAndReturnObject(fa, _ctx=ctx)
+
+            # 4) Link FileAnnotation -> Dataset
+            dal = omodel.DatasetAnnotationLinkI()
+            dal.setParent(omodel.DatasetI(dataset_id, False))
+            dal.setChild(omodel.FileAnnotationI(fa.getId().getValue(), False))
+            u.saveAndReturnObject(dal, _ctx=ctx)
+        # -----------------------------------------------------------------------------
 
         # Gather candidate files
         candidates = _gather_files(root_dir, recursive=recursive, patterns=patterns)

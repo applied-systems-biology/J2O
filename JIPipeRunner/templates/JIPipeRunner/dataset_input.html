@@ -1022,14 +1022,14 @@
         }
 
         // Get the response to add the job to the UI 
-        const { job_id: jobId, job_name: name, job_start_time: start_time } = responseJSON;
+        const { job_id: jobId, job_name: name, job_start_time: start_time, log_file_path: logPath } = responseJSON;
         loadRunningJobs();
 
         // Wait for the log output to finish before removing the job from the UI (Log checks for finished status of job)
         const job_status = await updateLogWindow(jobId, global_variable_snapshot);
         loadRunningJobs();
 
-        return { start_time, job_status };
+        return { start_time, job_status, logPath };
       }
 
       /**
@@ -1173,7 +1173,7 @@
        * @param {string} job_start_time - A string containing the start time of the job for tagging the default folder with a timestamp.
        * @returns {dict} - Returns either info about the downloaded data in form of JSON or the raw response if it is not JSON.
       */
-      async function uploadOutput(parameter_override_json, uuid_to_project_id_map, global_variable_snapshot, job_start_time) {
+      async function uploadOutput(parameter_override_json, uuid_to_project_id_map, global_variable_snapshot, job_start_time, log_file_path) {
         logOutput.textContent += 'Uploading results to OMERO...\n';
         const results = [];
         for (const key in parameter_override_json){
@@ -1197,7 +1197,8 @@
                                    project_id: project_id, 
                                    dataset_name: dataset_name, 
                                    recursive: false, 
-                                   patterns: ["*.png", "*.tif", "*.tiff", "*.jpg"], 
+                                   patterns: ["*.png", "*.tif", "*.tiff", "*.jpg"],
+                                   log_file_path: log_file_path
                                   })
             });
 
@@ -1448,12 +1449,10 @@
             };
 
             let { job_parameter_override, uuid_to_project_id_map } = await createJobPipelineParametersOverride(global_variable_snapshot);
-            const { start_time, job_status } = await executePipelineJob(job_parameter_override, global_variable_snapshot);
-            if (job_status != "canceled"){
-              const response_JSON = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time);
-              console.log("Output upload info: ", response_JSON);
-            }
+            const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, global_variable_snapshot);
             loadRunningJobs();
+            const response_JSON = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
+            console.log("Output upload info: ", response_JSON);
           }catch(err){
             console.error(`${err.name}: ${err.message}`)
             logOutput.textContent += `Error: ${err.message}\nStopping the task.\n`
