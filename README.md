@@ -3,28 +3,26 @@
 
 JIPipeRunner is a plugin for [omero-web](https://github.com/ome/omero-web) that makes it possible to run [JIPipe](https://jipipe.hki-jena.de/) workflows directly on the server that is hosting the OMERO database. This eliminates the need for users to share their data and workflows outside of OMERO and greatly reduces the data traffic as well as aiding reproducibility.
 
-## License & Attribution
+## Features
 
-Marius Wank, Ruman Gerst, Marc Thilo Figge
+Frontend-features include:
 
-Research Group Applied Systems Biology - Head: Prof. Dr. Marc Thilo Figge\
-https://www.leibniz-hki.de/en/applied-systems-biology.html \
-HKI-Center for Systems Biology of Infection\
-Leibniz Institute for Natural Product Research and Infection Biology - Hans Knöll Institute (HKI)\
-Adolf-Reichwein-Straße 23, 07745 Jena, Germany
+- Dynamic single page application
+- Smooth OMERO integration
+- Job management section
+- Configurable I/O
+- Error resistant UI design using TomSelect
+- Customizable JIPipe tooltips
+- Live log streaming and log archiving
 
-This plugin is licensed under the **Creative Commons Attribution 4.0 International License (CC BY 4.0)**.  
-You are free to share and adapt it with proper attribution.  
-See: [CC BY 4.0 License](https://creativecommons.org/licenses/by/4.0/)
+Backend features include:
 
-### Dependencies & Third-Party Tools
-
-- **Tom Select** (UI select widget)  
-  Licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
-
-
-This plugin is designed to work with **JIPipe**, developed by **Ruman Gerst and Zoltán Csereynes**.  
-> JIPipe is **not** included in this plugin’s distribution. Please visit [jipipe.org](https://jipipe.org) for license details.
+- Celery task queue
+- Redis distributed caching
+- Job status tracking
+- Directory management with automated cleanup
+- CSRF protection
+- JIPipe docker containers
 
 ## Requirements
 
@@ -109,7 +107,7 @@ Below you will find a detailed explanation for all sections displayed within the
 
 ### FILE SELECTION
 
-The plugin will load its content depending on the .jip file you select at the top of this section. When checking **Enable output config**, the [output node configuration](#output-node-configuration) will be accessible.
+The plugin will load its content dynamically depending on the .jip file you select at the top of this section. When checking **Enable output config**, the [output node configuration](#output-node-configuration) will be accessible.
 
 <p align="center">
   <img src="./assets/images/FileSelectionSection.png"/>
@@ -142,7 +140,7 @@ If the JIPipe pipeline follows the [pipeline design constraints](#pipeline-desig
 
 ### OUTPUT NODE CONFIGURATION
 
-When checking **Enable output config** in the [file selection](#file-selection), the output configuration becomes available. Here you can choose a pre-existing project (the same way as selecting the input dataset ID) that you want to save the generated output dataset to and give the dataset a custom name. The name can be entered in plain text when unchecking **Input as expression**, otherwise an [expression as described in the JIPipe documentation](https://jipipe.hki-jena.de/documentation/expressions.html) can be entered. 
+When checking **Enable output config** in the [file selection](#file-selection), the output configuration becomes available. Here you can choose a pre-existing project (the same way as selecting the input dataset ID) that you want to save the generated output dataset to and give the dataset a custom name. If you don't enter anything (either when not checking **Enable output config** or when you are not changing the placeholders) the outputs of your pipeline will be saved in a project called "JipipeResultsDefault". The images will be saved within that project in a dataset named after the .jip file and the start time of execution (e.g. FolderListTest.jip@01-09-2025_15:07:41). 
 
 ![Output node config section](./assets/images/OutputConfigSection.png)
 
@@ -156,41 +154,66 @@ Below this section you will find the **Start JIPipeRunner** button to execute th
 
 ### LOG WINDOW
 
-Below the button that starts the pipeline execution, you will find the log window. During execution, the window will livestream the JIPipe logfile. This can be used to check on the current progress of the execution or to debug problems within the workflow. 
+Below the button that starts the pipeline execution, you will find the log window. During execution, the window will livestream the JIPipe logfile. This can be used to check on the current progress of the execution or to debug problems within the workflow. Any additional information will also be displayed here. For example, if an error occurs a helpful message will tell you what went wrong.
 
 ![Log window section](./assets/images/LogWindowSection.png)
+
+The log window will only ever display the content of the log file from the most recent job started by the user. To review old log files or to inspect errors of jobs that ran in the background, you can find the log files under the attachment tab of the output dataset. By clicking on the file, an automated download will be started. 
+
+![Old log files](./assets/images/OldLogFiles.png)
+
 
 ## Pipeline design constraints
 
 Since OMERO relies on custom objects rather than a standard filesystem, there are certain constraints in the way the plugin can handle file I/O. To ensure that a JIPipe workflow is compatible with the plugin, it needs to adhere to the design constraints given here.
 
-### Handling login credentials
-
-While you are already logged in when you are working with the plugin in OMERO, there is no functionality (for security reasons) to provide your login credentials to JIPipe. However, since the plugin relies on the JIPipe OMERO nodes that require valid login credentials to work, you need to set your credentials manually within the JIPipe project. Refer to the [official JIPipe OMERO integration page](https://jipipe.hki-jena.de/documentation/omero-integration.html) for more information.
-
 ### Input nodes
 
-In the [input node configuration section](#input-node-configuration), JIPipeRunner will only allow you to change the Dataset IDs entry of the "Define dataset IDs" nodes. Therefore, it is crucial that all relevant input that is connected to your workflow uses the following node structure:
+In the [input node configuration section](#input-node-configuration), JIPipeRunner will allow you to enter the datasets containing the images you want to use as input for the associated node. You can select multiple datasets per node, their combined content will then be used as input. Internally, JIPipeRunner will call the OMERO API to "download" the images to a temporary folder. To access the data, JIPipeRunner requires the pipeline to use the "Folder list" node as a starting point. The path leading to the "downloaded" data will automatically be inserted. This means the input structure should look something like this:
 
 <p align="center">
   <img src="./assets/images/InputStructure.png" style="height:300px"/>
 </p>
 
+Only the "Folder list" nodes will be detected as valid input nodes. If you use anything else, the plugin will not allow you to select the input from within OMERO. Technically, only the "Folder list" node is required. However, we recommend the above structure since other image importers like the "Bio-Formats importer" are not functional within the plugin yet.
 
 ### Reference parameter configuration
 
-To prevent the display of all possible node parameters of a pipeline within the plugin, the creator of the pipeline must specify the parameters that should be changeable as reference parameters in the [project overview](https://jipipe.hki-jena.de/documentation/project-overview.html) within JIPipe. If none are specified, the [parameter configuration section](#parameter-configuration) will be empty and the pipeline can only be executed as is.
+To prevent the display of all possible node parameters of a pipeline within the plugin, the creator of the pipeline must specify the parameters that should be changeable as reference parameters in the [project overview](https://jipipe.hki-jena.de/documentation/project-overview.html) within JIPipe. If none are specified, the [parameter configuration section](#parameter-configuration) will be empty and the pipeline can only be executed with the input specified within the .jip file.
 
 ![Reference Parameters](./assets/images/ReferenceParameters.png)
 
 ### Output nodes
 
-When executed with an unchecked **Enable output config**, JIPipeRunner will automatically create a new project within the OMERO database called "JIPipeResults" or use a pre-existing project with the same name. Otherwise, the user input in the [output node configuration section](#output-node-configuration) will be used.
+When executed with an unchecked **Enable output config**, JIPipeRunner will automatically create a new project within the OMERO database called "JipipeResultsDefault" or use a pre-existing project with the same name. Otherwise, the user input in the [output node configuration section](#output-node-configuration) will be used.
 
-For a pipeline to store its results in a dataset within a project, it is crucial that the output that should be stored in OMERO is connected to the following node structure within the pipeline: 
+For a pipeline to store its results in a dataset within a project, it is crucial that the output that should be stored in OMERO is connected to a "Export image" node: 
 
 <p align="center">
   <img src="./assets/images/OutputStructure.png" style="height:300px"/>
 </p>
 
-Note that the upload node needs to be connected to the output and that there are different upload nodes depending on the output type. You don't actually have to change any of the parameters within these nodes, as JIPipeRunner will fill them for you.
+Currently, JIPipeRunner only supports exporting images to OMERO. Exporting other files requires a different OMERO API call. The implementation for that will be a feature for a future version.
+
+## License & Attribution
+
+Marius Wank, Ruman Gerst, Marc Thilo Figge
+
+Research Group Applied Systems Biology - Head: Prof. Dr. Marc Thilo Figge\
+https://www.leibniz-hki.de/en/applied-systems-biology.html \
+HKI-Center for Systems Biology of Infection\
+Leibniz Institute for Natural Product Research and Infection Biology - Hans Knöll Institute (HKI)\
+Adolf-Reichwein-Straße 23, 07745 Jena, Germany
+
+This plugin is licensed under the **Creative Commons Attribution 4.0 International License (CC BY 4.0)**.  
+You are free to share and adapt it with proper attribution.  
+See: [CC BY 4.0 License](https://creativecommons.org/licenses/by/4.0/)
+
+### Dependencies & Third-Party Tools
+
+- **Tom Select** (UI select widget)  
+  Licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
+
+
+This plugin is designed to work with **JIPipe**, developed by **Ruman Gerst and Zoltán Csereynes**.  
+> JIPipe is **not** included in this plugin’s distribution. Please visit [jipipe.org](https://jipipe.org) for license details.
