@@ -58,7 +58,7 @@ sudo systemctl restart omero-web
 ### Step 2 - Clone the repository
 Clone the repository and navigate to the folder:
 ```bash
-git clone -b dockerized_jipipe https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
+git clone https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
 cd OMERO_JIPipe_Plugin
 ```
 
