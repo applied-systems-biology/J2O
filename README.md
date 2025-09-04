@@ -195,6 +195,8 @@ For a pipeline to store its results in a dataset within a project, it is crucial
 
 Currently, JIPipeRunner only supports exporting images to OMERO. Exporting other files requires a different OMERO API call. The implementation for that will be a feature for a future version.
 
+>⚠️ **Please note: JIPipeRunner will name the output files using the auto_file_name expression. Currently this requires the output to have atleast one annotation.** ⚠️
+
 ## License & Attribution
 
 Marius Wank, Ruman Gerst, Marc Thilo Figge
