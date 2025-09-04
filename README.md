@@ -167,7 +167,7 @@ The log window will only ever display the content of the log file from the most 
 
 Since OMERO relies on custom objects rather than a standard filesystem, there are certain constraints in the way the plugin can handle file I/O. To ensure that a JIPipe workflow is compatible with the plugin, it needs to adhere to the design constraints given here.
 
-Though not manddatory, we recommend pipeline developers to **name the reference parameters clearly** and **provide a sufficient description**. When using multiple input/output nodes it is especially important to give them **clear and unique names** so that they can be distinguished in the plugin UI.
+Though not mandatory, we recommend pipeline developers to **name the reference parameters clearly** and **provide a sufficient description**. When using multiple input/output nodes it is especially important to give them **clear and unique names** so that they can be distinguished in the plugin UI.
 
 ### Input nodes
 
@@ -197,7 +197,7 @@ For a pipeline to store its results in a dataset within a project, it is crucial
 
 Currently, JIPipeRunner only supports exporting images to OMERO. Exporting other files requires a different OMERO API call. The implementation for that will be a feature for a future version.
 
->⚠️ **Please note: JIPipeRunner will name the output files using the auto_file_name expression. Currently this requires the output to have atleast one annotation.** ⚠️
+>⚠️ **Please note: JIPipeRunner will name the output files using the auto_file_name expression. Currently this requires the output to have at least one annotation.** ⚠️
 
 ## License & Attribution
 
