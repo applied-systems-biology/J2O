@@ -167,6 +167,8 @@ The log window will only ever display the content of the log file from the most 
 
 Since OMERO relies on custom objects rather than a standard filesystem, there are certain constraints in the way the plugin can handle file I/O. To ensure that a JIPipe workflow is compatible with the plugin, it needs to adhere to the design constraints given here.
 
+Though not manddatory, we recommend pipeline developers to **name the reference parameters clearly** and **provide a sufficient description**. When using multiple input/output nodes it is especially important to give them **clear and unique names** so that they can be distinguished in the plugin UI.
+
 ### Input nodes
 
 In the [input node configuration section](#input-node-configuration), JIPipeRunner will allow you to enter the datasets containing the images you want to use as input for the associated node. You can select multiple datasets per node, their combined content will then be used as input. Internally, JIPipeRunner will call the OMERO API to "download" the images to a temporary folder. To access the data, JIPipeRunner requires the pipeline to use the "Folder list" node as a starting point. The path leading to the "downloaded" data will automatically be inserted. This means the input structure should look something like this:
