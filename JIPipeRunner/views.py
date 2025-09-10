@@ -2,7 +2,6 @@ from datetime import datetime
 import json
 import logging
 import os
-from queue import Full
 import signal
 import uuid
 from typing import Optional
@@ -11,12 +10,13 @@ import tempfile
 import contextlib
 import fnmatch
 import io
-import re
 import shutil
+import mimetypes
+from pathlib import Path
 
 from JIPipePlugin import settings
 from django.core.cache import cache
-from django.http import Http404, HttpResponse, JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 from django.views.decorators.csrf import csrf_protect
@@ -29,16 +29,16 @@ import omero
 import omero.model
 from omero.rtypes import rstring, rlong
 from omeroweb.decorators import login_required
-from omero.plugins.export import ExportControl
 from omero.cli import CLI, NonZeroReturnCode
 import omero.model as omodel
 from omero.model import ProjectI
 
 # Directory where JIPipe log files are stored (customize via Django settings)
-LOG_DIR = settings.LOG_DIR or '/tmp/jipipe/logs'
+HOME = Path("~").expanduser()
+LOG_DIR = settings.LOG_DIR or HOME / "jipipe-runner" / "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-JIPIPE_TEMP_DIR = settings.JIPIPE_TEMP_DIR or '/tmp'
+JIPIPE_TEMP_DIR = settings.JIPIPE_TEMP_DIR or HOME / "jipipe-runner" / "data"
 os.makedirs(JIPIPE_TEMP_DIR, exist_ok=True)
 
 # Time (in seconds) to keep PIDs in cache before expiring (None == never expire)
@@ -737,94 +737,162 @@ def upload_output(request, conn=None, **kwargs):
 
 
         # ---- Attach log.txt to the Dataset using ONLY raw services + the same ctx ----
+
         if log_path and os.path.isfile(log_path):
-            # 1) Create an OriginalFile in the target group
-            of = omodel.OriginalFileI()
-            of.setName(rstring(os.path.basename(log_path)))
-            of.setPath(rstring("/"))  # logical server-side path; avoid local absolute paths here
-            of.setSize(rlong(os.path.getsize(log_path)))
-            of.setMimetype(rstring("text/plain"))
-            of = u.saveAndReturnObject(of, _ctx=ctx)  # IMPORTANT: saved with proper group
+            basename = os.path.basename(log_path)
 
-            # 2) Upload bytes via RawFileStore (note: use createRawFileStore)
-            rfs = conn.c.sf.createRawFileStore()
-            try:
-                rfs.setFileId(of.getId().getValue(), _ctx=ctx)
-                with open(log_path, "rb") as fh:
-                    offset = 0
-                    while True:
-                        chunk = fh.read(64 * 1024)
-                        if not chunk:
-                            break
-                        rfs.write(chunk, offset, len(chunk), _ctx=ctx)
-                        offset += len(chunk)
-                rfs.save(_ctx=ctx)
-            finally:
-                rfs.close()
+            # 0) Check if a FileAnnotation with the same OriginalFile name is already linked to the Dataset
+            q = conn.getQueryService()
+            params = omero.sys.ParametersI()
+            params.addId(dataset_id)
+            params.addString("fname", basename)
 
-            # 3) Create FileAnnotation referencing the OriginalFile
-            fa = omodel.FileAnnotationI()
-            fa.setFile(omodel.OriginalFileI(of.getId().getValue(), False))
-            fa.setNs(rstring("omero.jipipe/log"))  # optional namespace
-            fa = u.saveAndReturnObject(fa, _ctx=ctx)
+            hql = """
+                select fa
+                from DatasetAnnotationLink dal
+                join dal.child fa
+                join fa.file f
+                where dal.parent.id = :id
+                and f.name = :fname
+            """
 
-            # 4) Link FileAnnotation -> Dataset
-            dal = omodel.DatasetAnnotationLinkI()
-            dal.setParent(omodel.DatasetI(dataset_id, False))
-            dal.setChild(omodel.FileAnnotationI(fa.getId().getValue(), False))
-            u.saveAndReturnObject(dal, _ctx=ctx)
-        # -----------------------------------------------------------------------------
+            existing = q.findAllByQuery(hql, params, _ctx=ctx)
+            if existing and len(existing) > 0:
+                # A file with the same name is already attached to this Dataset; do nothing.
+                # (If you prefer, you could log/print a message here.)
+                pass
+            else:
+                # 1) Create an OriginalFile in the target group
+                of = omodel.OriginalFileI()
+                of.setName(rstring(os.path.basename(log_path)))
+                of.setPath(rstring("/"))  # logical server-side path; avoid local absolute paths here
+                of.setSize(rlong(os.path.getsize(log_path)))
+                of.setMimetype(rstring("text/plain"))
+                of = u.saveAndReturnObject(of, _ctx=ctx)  # IMPORTANT: saved with proper group
+
+                # 2) Upload bytes via RawFileStore (note: use createRawFileStore)
+                rfs = conn.c.sf.createRawFileStore()
+                try:
+                    rfs.setFileId(of.getId().getValue(), _ctx=ctx)
+                    with open(log_path, "rb") as fh:
+                        offset = 0
+                        while True:
+                            chunk = fh.read(64 * 1024)
+                            if not chunk:
+                                break
+                            rfs.write(chunk, offset, len(chunk), _ctx=ctx)
+                            offset += len(chunk)
+                    rfs.save(_ctx=ctx)
+                finally:
+                    rfs.close()
+
+                # 3) Create FileAnnotation referencing the OriginalFile
+                fa = omodel.FileAnnotationI()
+                fa.setFile(omodel.OriginalFileI(of.getId().getValue(), False))
+                fa.setNs(rstring("omero.jipipe/log"))  # optional namespace
+                fa = u.saveAndReturnObject(fa, _ctx=ctx)
+
+                # 4) Link FileAnnotation -> Dataset
+                dal = omodel.DatasetAnnotationLinkI()
+                dal.setParent(omodel.DatasetI(dataset_id, False))
+                dal.setChild(omodel.FileAnnotationI(fa.getId().getValue(), False))
+                u.saveAndReturnObject(dal, _ctx=ctx)
+            # -----------------------------------------------------------------------------
 
         # Gather candidate files
         candidates = _gather_files(root_dir, recursive=recursive, patterns=patterns)
         if not candidates:
             return JsonResponse({"error": "No matching files to import."}, status=400)
+        
+        # Decide what we consider importable image files
+        IMAGE_EXTS = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".dv", ".czi", ".nd2", ".lif", ".ics", ".ids", ".svs", ".mrxs"}
+        files_for_import = [p for p in candidates if os.path.splitext(p)[1].lower() in IMAGE_EXTS]
+        files_for_attach = [p for p in candidates if p not in files_for_import]
 
-        # Build a single import command for ALL files
-        base_args = [
-            "import",
-            "-g", str(gid),
-            "-T", f"Dataset:{dataset_id}",
-            "--no-upgrade-check",
-        ]
-        full_args = base_args + candidates
+        attached = []
+        if files_for_attach:
+            for apath in files_for_attach:
+                try:
+                    of = omodel.OriginalFileI()
+                    of.setName(rstring(os.path.basename(apath)))
+                    of.setPath(rstring("/"))
+                    of.setSize(rlong(os.path.getsize(apath)))
+                    mt, _ = mimetypes.guess_type(apath)
+                    of.setMimetype(rstring(mt or "application/octet-stream"))
+                    of = u.saveAndReturnObject(of, _ctx=ctx)
 
-        # Invoke ONCE with the embedded client
-        buf_out, buf_err = io.StringIO(), io.StringIO()
+                    rfs = conn.c.sf.createRawFileStore()
+                    try:
+                        rfs.setFileId(of.getId().getValue(), _ctx=ctx)
+                        with open(apath, "rb") as fh:
+                            offset = 0
+                            while True:
+                                chunk = fh.read(64 * 1024)
+                                if not chunk:
+                                    break
+                                rfs.write(chunk, offset, len(chunk), _ctx=ctx)
+                                offset += len(chunk)
+                        rfs.save(_ctx=ctx)
+                    finally:
+                        rfs.close()
+
+                    fa = omodel.FileAnnotationI()
+                    fa.setFile(omodel.OriginalFileI(of.getId().getValue(), False))
+                    fa.setNs(rstring("omero.jipipe/attachment"))
+                    fa = u.saveAndReturnObject(fa, _ctx=ctx)
+
+                    dal = omodel.DatasetAnnotationLinkI()
+                    dal.setParent(omodel.DatasetI(dataset_id, False))
+                    dal.setChild(omodel.FileAnnotationI(fa.getId().getValue(), False))
+                    u.saveAndReturnObject(dal, _ctx=ctx)
+
+                    attached.append({"file": apath, "type": "attachment"})
+                except Exception as e:
+                    errors.append({"file": apath, "error": f"attach failed: {e}"})
+
         results, errors = [], []
         imported = 0
 
-        try:
-            cli = CLI()
-            cli.loadplugins()
-            cli.set_client(conn.c)  # attach the current connection ONCE
-            with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
-                cli.invoke(full_args, strict=True)
+        if files_for_import:
+            base_args = [
+                "import",
+                "-g", str(gid),
+                "-T", f"Dataset:{dataset_id}",
+                "--no-upgrade-check",
+            ]
+            full_args = base_args + files_for_import
 
-            # Count number of imported files
-            for fpath in candidates:
-                results.append({
-                    "file": fpath
-                })
-                imported += 1
+            buf_out, buf_err = io.StringIO(), io.StringIO()
+            try:
+                cli = CLI()
+                cli.loadplugins()
+                cli.set_client(conn.c)
+                with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
+                    cli.invoke(full_args, strict=True)
 
-        except NonZeroReturnCode:
-            # Whole-run failure: surface importer stderr
-            err = buf_err.getvalue() or buf_out.getvalue()
-            return JsonResponse({
-                "error": (err or "").strip(),
-                "project_id": project_id,
-                "dataset_id": dataset_id,
-                "dataset_name": dataset_name,
-                "root_dir": root_dir,
-                "recursive": recursive,
-                "patterns": patterns,
-            }, status=500)
-        except Exception as e:
-            return JsonResponse({
-                "error": str(e),
-                "trace": traceback.format_exc()
-            }, status=500)
+                for fpath in files_for_import:
+                    results.append({"file": fpath, "type": "image"})
+                    imported += 1
+
+            except NonZeroReturnCode as nz:
+                # Surface BOTH streams so we don't lose the real message
+                err_text = "\n".join([buf_err.getvalue().strip(), buf_out.getvalue().strip()]).strip()
+                return JsonResponse({
+                    "error": err_text or f"OMERO import failed (exit code {getattr(nz, 'returncode', '?')})",
+                    "project_id": project_id,
+                    "dataset_id": dataset_id,
+                    "dataset_name": dataset_name,
+                    "root_dir": root_dir,
+                    "recursive": recursive,
+                    "patterns": patterns,
+                    "files_for_import": files_for_import,
+                    "files_for_attach": files_for_attach,
+                }, status=500)
+            except Exception as e:
+                return JsonResponse({"error": str(e), "trace": traceback.format_exc()}, status=500)
+        else:
+            # No images to import; that's fine if we attached something
+            pass
 
         status = 200 if not errors else 207
         return JsonResponse({
@@ -836,11 +904,12 @@ def upload_output(request, conn=None, **kwargs):
             "patterns": patterns,
             "files_considered": len(candidates),
             "files_imported": imported,
-            "files_skipped": len(candidates) - imported,
-            "results": results,
+            "files_attached": len(attached),
+            "files_skipped": len(candidates) - imported - len(attached),
+            "results": results + attached,
             "errors": errors,
-            "stdout": buf_out.getvalue().strip(),   # optional: helpful for logs
-            "stderr": buf_err.getvalue().strip(),   # optional
+            "stdout": (buf_out.getvalue().strip() if files_for_import else ""),
+            "stderr": (buf_err.getvalue().strip() if files_for_import else ""),
         }, status=status)
 
     except KeyError as e:
