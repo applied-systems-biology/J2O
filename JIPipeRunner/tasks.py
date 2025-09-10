@@ -10,7 +10,8 @@ import docker
 from docker.errors import ImageNotFound, NotFound
 
 # Directory where JIPipe log files are stored (customize via Django settings)
-LOG_DIR = getattr(settings, 'JIPIPE_LOG_ROOT', '/tmp/jipipe/logs')
+HOME = Path("~").expanduser()     
+LOG_DIR = settings.LOG_DIR or HOME / "jipipe-runner" / "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 """
@@ -44,10 +45,8 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             json.dumps(parameter_override_json)
         )
 
-        Path("/tmp/jipipe-data").mkdir(parents=True, exist_ok=True)
-
         # Run the container on the image corresponding to the JIPipe version
-        image   = f"appsysbiohkijena/jipipe:{jipipe_version}.0.0"
+        image   = f"mariuswank/jipipe_headless:{jipipe_version}"
         name    = f"jipipe-{jipipe_version}-{job_uuid[:8]}"
 
         command = [
@@ -70,8 +69,7 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             network_mode="host",
             volumes={
                 str(temp_input) : {"bind": temp_input,  "mode": "rw"},
-                str(temp_output): {"bind": temp_output, "mode": "rw"},
-                "/tmp/jipipe-data": {"bind": "/data", "mode": "rw"}
+                str(temp_output): {"bind": temp_output, "mode": "rw"}
             },
             stdout=True,
             stderr=True
