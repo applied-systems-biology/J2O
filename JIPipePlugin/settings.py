@@ -47,9 +47,9 @@ DEBUG = False
 
 ALLOWED_HOSTS = ["*"]
 
-JIPIPE_TEMP_DIR = "/tmp/jipipe-runner/data"
-
-LOG_DIR = '/tmp/jipipe-runner/logs'
+HOME = Path("~").expanduser()     
+JIPIPE_TEMP_DIR = HOME / "jipipe-runner" / "data"
+LOG_DIR = HOME / "jipipe-runner" / "logs"
 
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
