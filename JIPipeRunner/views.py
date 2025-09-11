@@ -35,10 +35,10 @@ from omero.model import ProjectI
 
 # Directory where JIPipe log files are stored (customize via Django settings)
 HOME = Path("~").expanduser()
-LOG_DIR = settings.LOG_DIR or HOME / "jipipe-runner" / "logs"
+LOG_DIR = settings.JIPIPERUNNER_LOG_DIR or HOME / "jipipe-runner" / "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
-JIPIPE_TEMP_DIR = settings.JIPIPE_TEMP_DIR or HOME / "jipipe-runner" / "data"
+JIPIPE_TEMP_DIR = settings.JIPIPERUNNER_TEMP_DIR or HOME / "jipipe-runner" / "data"
 os.makedirs(JIPIPE_TEMP_DIR, exist_ok=True)
 
 # Time (in seconds) to keep PIDs in cache before expiring (None == never expire)

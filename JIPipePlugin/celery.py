@@ -1,13 +1,27 @@
 import os
 import logging
 from celery import Celery
-from django.conf import settings
+from omero.config import ConfigXml
+import json
 
 # Set the default Django settings module for the 'celery' program.
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'JIPipePlugin.settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'JIPipePlugin.private_settings')
 
 try:
-    cache_location = settings.CACHES["default"]["LOCATION"]
+    cfg_file = os.path.join(os.environ["OMERODIR"], "etc", "grid", "config.xml")
+    cfg = ConfigXml(cfg_file, read_only=True)
+    raw = cfg.as_map().get("omero.web.caches")
+
+    if raw:
+        CACHES = json.loads(raw)
+    else:
+        raise RuntimeError("omero.web.caches not found in config.xml")
+
+except Exception as e:
+    raise RuntimeError(f"Failed to load OMERO cache config: {e}")
+
+try:
+    cache_location = CACHES["default"]["LOCATION"]
 except Exception as e:
     raise RuntimeError("omero.web.caches not correctly defined!")
 

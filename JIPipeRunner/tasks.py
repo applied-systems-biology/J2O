@@ -1,17 +1,14 @@
 from celery import shared_task
-import uuid, json, os, tempfile, subprocess, shutil, logging
+import json, os, logging
 from pathlib import Path
 from django.core.cache import cache
-from omero.config import ConfigXml
-import signal
-import time
-from django.conf import settings
 import docker
 from docker.errors import ImageNotFound, NotFound
+from JIPipePlugin import settings
 
 # Directory where JIPipe log files are stored (customize via Django settings)
 HOME = Path("~").expanduser()     
-LOG_DIR = settings.LOG_DIR or HOME / "jipipe-runner" / "logs"
+LOG_DIR = settings.JIPIPERUNNER_LOG_DIR or HOME / "jipipe-runner" / "logs"
 os.makedirs(LOG_DIR, exist_ok=True)
 
 """
