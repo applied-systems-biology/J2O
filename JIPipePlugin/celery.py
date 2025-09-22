@@ -5,7 +5,7 @@ from omero.config import ConfigXml
 import json
 
 # Set the default Django settings module for the 'celery' program.
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'JIPipePlugin.private_settings')
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'JIPipePlugin.settings')
 
 try:
     cfg_file = os.path.join(os.environ["OMERODIR"], "etc", "grid", "config.xml")
@@ -25,7 +25,12 @@ try:
 except Exception as e:
     raise RuntimeError("omero.web.caches not correctly defined!")
 
-app = Celery('JIPipePlugin', broker=cache_location, backend=cache_location)
+app = Celery(
+    "JIPipePlugin",
+    broker=cache_location,
+    backend=cache_location,
+    include=["JIPipeRunner.tasks"]
+)
 # run on omero-web: celery -A JIPipePlugin worker --loglevel=info -E
 
 # Load task modules from all registered Django apps.
