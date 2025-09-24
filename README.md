@@ -20,45 +20,27 @@ Backend features include:
 - Job status tracking
 - Directory management with automated cleanup
 - CSRF protection
-- JIPipe docker containers
+- JIPipe containers
 
 ## Requirements
 - Python 3.10
 - omero-web
 - Django
-- Docker
+- podman
 - Celery 
 - redis
 
 ## Installation
 This plugin assumes that [omero-web](https://github.com/ome/omero-web) has been setup as described in its [documentation](https://omero.readthedocs.io/en/stable/sysadmins/unix/install-web/web-deployment). To ease the installation process of the plugin, a bash script is provided in the repository. For manual installation, check the [guide for manual installation](ManualInstallationGuide.md).
 
-### Step 1 - Install docker
-Docker is required for the plugin to run. So be sure to install it according to the [docker documentation](https://docs.docker.com/engine/install/) before starting the installation process.
-
-Additionally, the omero-web user needs to be part of the docker group. You can test this by running:
-```bash
-groups omero-web
-```
-
-If docker is missing, add it by running:
-```bash
-sudo usermod -aG docker omero-web
-```
-
-and restart to apply:
-```bash
-sudo systemctl restart omero-web
-```
-
-### Step 2 - Clone the repository
+### Step 1 - Clone the repository
 Clone the repository and navigate to the folder:
 ```bash
 git clone https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
 cd OMERO_JIPipe_Plugin
 ```
 
-### Step 3 - Setup redis as cache backend
+### Step 2 - Setup redis as cache backend
 >**You may ignore this step if you have redis already setup as your caching backend**
 
 First, install redis-server and start the service as the root user:
@@ -66,13 +48,13 @@ First, install redis-server and start the service as the root user:
 apt-get install -y redis-server
 service redis-server start
 ```
-Then, as the omero-web system user, edit the omero cache config to point to your redis server location:
+Then, **as the omero-web system user**, edit the omero cache config to point to your redis server location:
 ```bash
 omero config set omero.web.caches '{"default": {"BACKEND": "django_redis.cache.RedisCache", "LOCATION": "redis://127.0.0.1:6379/0"}}'
 ```
 >⚠️ **Be sure your omero setup does not depend on other caching methods** ⚠️
 
-### Step 4 - Install JIPipeRunner
+### Step 3 - Install JIPipeRunner
 Run the bash script as omero-web with sudo privileges or as root:
 ```bash
 sudo bash installJIPipeRunner.sh

@@ -2,32 +2,14 @@
 
 **Note that all the commands should be run within your [omero-web](https://github.com/ome/omero-web) virtual environment!**
 
-### Step 1 - Install docker
-Docker is required for the plugin to run. So be sure to install it according to the [docker documentation](https://docs.docker.com/engine/install/) before starting the installation process.
-
-Additionally, the omero-web user needs to be part of the docker group. You can test this by running:
-```bash
-groups omero-web
-```
-
-If docker is missing, add it by running:
-```bash
-sudo usermod -aG docker omero-web
-```
-
-and restart to apply:
-```bash
-sudo systemctl restart omero-web
-```
-
-### Step 2 - Clone the repository
+### Step 1 - Clone the repository
 Clone the repository and navigate to the folder:
 ```bash
 git clone https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin.git
 cd OMERO_JIPipe_Plugin
 ```
 
-### Step 3 - Install JIPipeRunner
+### Step 2 - Install JIPipeRunner
 Install the plugin using [pip](https://pip.pypa.io/en/stable/):
 ```bash
 pip install .
@@ -37,10 +19,17 @@ Alternatively, if you want to experiment with the code, install it with the edit
 pip install -e .
 ```
 
-### Step 4 - Install python requirements
+### Step 3 - Install python requirements
 Install the required python libraries using the requirements.txt:
 ```bash
 pip install -r requirements.txt
+```
+
+### Step 4 - Setup podman socket
+If not done before, you will need to activate a user systemd socket for podman to work:
+
+```bash
+systemctl --user enable --now podman.socket
 ```
 
 ### Step 5 - Setup redis as cache backend

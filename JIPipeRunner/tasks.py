@@ -2,8 +2,8 @@ from celery import shared_task
 import json, os, logging
 from pathlib import Path
 from django.core.cache import cache
-import docker
-from docker.errors import ImageNotFound, NotFound
+import podman
+from podman.errors import ImageNotFound, NotFound
 from JIPipePlugin import settings
 
 # Directory where JIPipe log files are stored (customize via Django settings)
@@ -33,8 +33,9 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
     container = None
 
     try:
-        # Client for docker
-        client = docker.from_env()
+        # Client for Podman (use CONTAINER_HOST, or fall back to the default rootless socket)
+        base_url = os.environ.get("CONTAINER_HOST") or f"unix:///run/user/{os.getuid()}/podman/podman.sock"
+        client = podman.PodmanClient(base_url=base_url)  # Podman REST API client
 
         # Dump input into temp directory
         (Path(temp_input) / "JIPipeProject.jip").write_text(json.dumps(jipipe_project_config))
@@ -43,8 +44,28 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         )
 
         # Run the container on the image corresponding to the JIPipe version
-        image   = f"mariuswank/jipipe_headless:{jipipe_version}"
+        repo    = f"docker.io/mariuswank/jipipe_headless"
+        tag     = str(jipipe_version)
+        image   = f"docker.io/mariuswank/jipipe_headless:{jipipe_version}"
         name    = f"jipipe-{jipipe_version}-{job_uuid[:8]}"
+
+        
+        # Stream layer-by-layer progress as JSON events
+        for evt in client.images.pull(
+                repository=repo,
+                tag=tag,
+                stream=True,          # <- stream progress
+                decode=True,          # <- yield dicts, not bytes
+                policy="always"      # <- only pull if not present
+            ):
+
+            stream = evt.get("stream")
+            line = f"[pull] {stream}"
+            with open(jipipe_log_file_path, "a") as logfile:
+                logfile.write(line)
+
+        with open(jipipe_log_file_path, "a") as logfile:
+                logfile.write(f"\n[pull] Found image {image}")
 
         command = [
             "run",
@@ -53,32 +74,27 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             "--output-folder",        f"{temp_output}",
         ]
 
-        uid = os.getuid()
-        gid = os.getgid()
-
         container = client.containers.run(
             image,
             command=command,
             name=name,
             detach=True,
             auto_remove=False,
-            user=f"{uid}:{gid}",
-            network_mode="host",
-            volumes={
-                str(temp_input) : {"bind": temp_input,  "mode": "rw"},
-                str(temp_output): {"bind": temp_output, "mode": "rw"}
-            },
+            mounts=[
+                {"type": "bind", "source": str(temp_input),  "target": temp_input},
+                {"type": "bind", "source": str(temp_output), "target": temp_output},
+            ],
             stdout=True,
             stderr=True
         )
 
         # Stream the log
-        for line in container.logs(stream=True):
-            decoded = line.decode()
+        for chunk in container.logs(stream=True, follow=True):
+            decoded = chunk.decode()
             with open(jipipe_log_file_path, "a") as logfile:
-                logfile.write(decoded)
+                logfile.write(f"\n{decoded}")
         
-        exit_code = container.wait()["StatusCode"]
+        exit_code = container.wait(condition="exited")
         with open(jipipe_log_file_path, "a") as logfile:
             logfile.write("JIPipe container exited with code {}\n".format(str(exit_code)))
 

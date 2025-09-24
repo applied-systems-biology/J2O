@@ -84,25 +84,36 @@ if ! run_as_omero-web pip -h &> /dev/null; then
     exit 1
 fi
 
-# === CHECK FOR DOCKER INSTALLATION ===
-echo "Checking if Docker is installed and usable by user '$OMERO_USER'..."
-# Check if docker is installed
-if ! command -v docker &> /dev/null; then
-    echo "Docker is not installed. Please install Docker before running this script."
+# === CHECK FOR PODMAN INSTALLATION ===
+echo "Checking if podman is installed and usable by user '$OMERO_USER'..."
+# Check if podman is installed
+if ! command -v podman &> /dev/null; then
+    echo "Podman is not installed. Please install podman before running this script."
     exit 1
 fi
 
-# Check if OMERO_USER can run docker directly
-if sudo -u "$OMERO_USER" docker ps > /dev/null 2>&1; then
-    echo "Docker is installed and usable by $OMERO_USER (without sudo)."
-elif sudo -u "$OMERO_USER" sudo -n docker ps > /dev/null 2>&1; then
-    echo "Docker requires sudo for $OMERO_USER, but passwordless sudo is available."
+# Check if OMERO_USER can run podman directly
+if sudo -u "$OMERO_USER" podman ps > /dev/null 2>&1; then
+    echo "podman is installed and usable by $OMERO_USER (without sudo)."
+elif sudo -u "$OMERO_USER" sudo -n podman ps > /dev/null 2>&1; then
+    echo "podman requires sudo for $OMERO_USER, but passwordless sudo is available."
 else
-    echo "User '$OMERO_USER' cannot execute Docker commands."
-    echo "Consider adding the user to the 'docker' group:"
-    echo "    sudo usermod -aG docker $OMERO_USER"
+    echo "User '$OMERO_USER' cannot execute podman commands."
+    echo "Consider adding the user to the 'podman' group:"
+    echo "    sudo usermod -aG podman $OMERO_USER"
     echo "    Then log out and back in."
     exit 1
+fi
+
+# === ENABLE PODMAN USER SOCKET IF NOT ALREADY ENABLED ===
+echo "Ensuring podman user socket is enabled for $OMERO_USER..."
+
+# Use --machine to query/enable the user's systemd without a user session env
+if systemctl --user --machine="${OMERO_USER}@.host" is-enabled podman.socket >/dev/null 2>&1; then
+    echo "podman.socket is already enabled for $OMERO_USER."
+else
+    echo "Enabling podman.socket for $OMERO_USER..."
+    systemctl --user --machine="${OMERO_USER}@.host" enable --now podman.socket
 fi
 
 # === INSTALL JIPIPERUNNER ===
