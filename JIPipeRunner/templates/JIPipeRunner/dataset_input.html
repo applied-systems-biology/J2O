@@ -1042,7 +1042,6 @@
           // Variables for status checks
           let finished = false;
           let previousLogLength = 0;
-          let retryCount = 0;
           let latest_job_id = jobId;
           let latest_job_name = null;
           let latest_job_start_time = null;
@@ -1092,15 +1091,8 @@
 
               // Retry if logs are not ready
               if (!logResp.ok || logResp.status === 204) {
-                  if (retryCount < 5) {
-                      retryCount++;
-                      await sleep(2000);
-                      return null;
-                  } else {
-                      logOutput.textContent += `\nLog for job ${jobId} couldn't be found in log directory. Terminating log output!`;
-                      finished = true;
-                      return null;
-                  }
+                await sleep(2000);
+                return null;
               }
               return await logResp.json();
           };
@@ -1118,11 +1110,13 @@
 
                   const { job_uuid: fetched_job_id, name: fetched_job_name, start_time: fetched_job_start_time } = latestJob;
 
-                  // Use info to update latest job info if available
+                  // Use info to update latest job info if available, if not terminate
                   if (fetched_job_id != null) {
                       latest_job_id = fetched_job_id;
                       latest_job_name = fetched_job_name;
                       latest_job_start_time = fetched_job_start_time;
+                  }else {
+                    return;
                   }
 
                   // Fetch logs for the current job
@@ -1137,9 +1131,6 @@
                       appendLogs(newLines);
                       previousLogLength = logs.length;
                   }
-
-                  // Abort log stream if no more jobs are available
-                  if (fetched_job_id == null) return;
                   
                   // Check if job is finished
                   finished = (status != "running");
@@ -1465,8 +1456,10 @@
             let { job_parameter_override, uuid_to_project_id_map } = await createJobPipelineParametersOverride(global_variable_snapshot);
             const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, global_variable_snapshot);
             loadRunningJobs();
-            const response_JSON = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
-            console.log("Output upload info: ", response_JSON);
+            if (job_status === "finished"){
+              const response_JSON = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
+              console.log("Output upload info: ", response_JSON);
+            }
           }catch(err){
             console.error(`${err.name}: ${err.message}`)
             logOutput.textContent += `Error: ${err.message}\nStopping the task.\n`
