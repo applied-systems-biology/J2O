@@ -328,7 +328,8 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
     """
     try:
         original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
-        groups = conn.listGroups()
+        user_id = conn.getUserId()
+        user_groups = list(conn.getOtherGroups(user_id))
 
         # Keep track of which file IDs we’ve already seen
         seen_file_ids = set()
@@ -337,7 +338,7 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
         all_jip_annotations = []
 
         # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
-        for group in groups:
+        for group in user_groups:
             # Set the session’s “active group” to gid
             conn.SERVICE_OPTS.setOmeroGroup(group.id)
 
@@ -386,7 +387,8 @@ def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
     """
     try:
         original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
-        groups = conn.listGroups()
+        user_id = conn.getUserId()
+        user_groups = list(conn.getOtherGroups(user_id))
 
         # Keep track of which file IDs we’ve already seen
         seen_dataset_ids = set()
@@ -395,7 +397,7 @@ def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
         all_available_datasets = []
 
         # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
-        for group in groups:
+        for group in user_groups:
             # Set the session’s “active group” to gid
             conn.SERVICE_OPTS.setOmeroGroup(group.id)
 
@@ -441,7 +443,8 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
     """
     try:
         original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
-        groups = conn.listGroups()
+        user_id = conn.getUserId()
+        user_groups = list(conn.getOtherGroups(user_id))
 
         # Keep track of which file IDs we’ve already seen
         seen_project_ids = set()
@@ -450,7 +453,7 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
         all_available_projects = []
 
         # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
-        for group in groups:
+        for group in user_groups:
             # Set the session’s “active group” to gid
             conn.SERVICE_OPTS.setOmeroGroup(group.id)
 
@@ -495,34 +498,43 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
     If it does not exist, create it with a description.
     Returns the Project object if it exists or was created successfully.
     """
+    try:
+        # Define the project name to look for or create
+        DEFAULT_PROJECT_NAME = "JipipeResultsDefault"
 
-    # Define the project name to look for or create
-    project_name = 'JIPipeResults'
+        # Set a group to save
+        original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
+        user_id = conn.getUserId()
+        user_groups = list(conn.getOtherGroups(user_id))
+        conn.SERVICE_OPTS.setOmeroGroup(user_groups[0].id)
 
-    # Set a group to save
-    original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
-    groups = list(conn.listGroups())
-    conn.SERVICE_OPTS.setOmeroGroup(groups[0].id)
+        # Attempt to find an existing project
+        existing_results_project = conn.getObject('Project', attributes={'name': DEFAULT_PROJECT_NAME})
+        if existing_results_project:
+            return existing_results_project
 
-    # Attempt to find an existing project
-    existing_results_project = conn.getObject('Project', attributes={'name': project_name})
-    if existing_results_project:
-        return existing_results_project
+        # Create a new Project with the specified name if it does not exist
+        new_project_model = omero.model.ProjectI()
+        new_project_model.setName(rstring(DEFAULT_PROJECT_NAME))
+        new_project_model.setDescription(rstring('Project to save all JIPipe results'))
+        saved_model = conn.getUpdateService().saveAndReturnObject(
+            new_project_model,
+            conn.SERVICE_OPTS,
+        )
 
-    # Create a new Project with the specified name if it does not exist
-    new_project_model = omero.model.ProjectI()
-    new_project_model.setName(rstring(project_name))
-    new_project_model.setDescription(rstring('Project to save all JIPipe results'))
-    saved_model = conn.getUpdateService().saveAndReturnObject(
-        new_project_model,
-        conn.SERVICE_OPTS,
-    )
+        # Get the ID of the newly created project and return the Project object
+        new_id = saved_model.getId().getValue()
+        return conn.getObject('Project', new_id)
+    except Exception as e:
+        # log the full stack trace so you can see what went wrong
+        logger.exception("Failed to create default project to save data to!")
+        return JsonResponse(
+            {'error': f'Internal server error creating default project to save data to: {e}'},
+            status=500
+        )
+    finally:
+        conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
 
-    conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
-
-    # Get the ID of the newly created project and return the Project object
-    new_id = saved_model.getId().getValue()
-    return conn.getObject('Project', new_id)
 
 def create_temp_directories(request) -> JsonResponse:
 
