@@ -485,12 +485,12 @@
             const { error, trace } = responseJSON ?? {};
             const details = trace ? `${error}\n${trace}` : error;
             console.error(`Error stopping job ${jobId}: ${details}`);
-            logOutput.textContent += `\nError stopping job ${jobId}: ${error}`;
+            manually_write_to_log_window(`Error stopping job ${jobId}: ${error}\n`);
             return;
           }
           // If the request was successful, display message in the log output
           await new Promise(resolve => setTimeout(resolve, 1000));  // small delay to wait for last log output
-          logOutput.textContent += `\nCanceled job ${responseJSON.name} started at ${responseJSON.start_time}\n`;
+          manually_write_to_log_window(`Canceled job ${responseJSON.name} started at ${responseJSON.start_time}\n`);
         } catch (err) {
           console.error(`${err.name} while stopping job: ${err.message}`);
         } finally{
@@ -850,8 +850,21 @@
         // Create temp directories
         logOutput.textContent += 'Initializing filesystem, please wait...\n';
         const response = await fetch('/JIPipeRunner/create_temp_directories/', {credentials: 'same-origin'});
+
+        let data;
+        try {
+          data = await response.json();
+        } catch (err) {
+          throw new Error(`Server did not return valid JSON. Check logs or Django output.`);
+        }
+
+        if (!response.ok) {
+          // Re-throw as an Error so your outer catch picks it up
+          throw new Error(data.error || "Unknown error while creating temp directories");
+        }
+
         // Save response
-        ({ temp_input, temp_output } = await response.json());
+        ({ temp_input, temp_output } = data);
       }
 
       /**
@@ -1047,7 +1060,6 @@
           let latest_job_start_time = null;
           let status = null;
           let logs = null;
-          const logContainer = logOutput.parentElement; // DOM element to update
 
           // Wait for a given amount of ms
           const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -1063,14 +1075,7 @@
                       .map(line => `${latest_job_name} @ ${latest_job_start_time}: ${line}`)
                       .join('\n') + "\n";
               }
-
-              const isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 1;
-              logOutput.textContent += finalOutput;
-
-              // Only scroll if previously at the bottom
-              if (isAtBottom) {
-                  logContainer.scrollTop = logContainer.scrollHeight;
-              }
+              manually_write_to_log_window(finalOutput);
           };
 
           // Fetch the latest job info
@@ -1106,7 +1111,6 @@
 
                   // Fetch latest job
                   const latestJob = await fetchLatestJob();
-                  if (!latestJob) return;
 
                   const { job_uuid: fetched_job_id, name: fetched_job_name, start_time: fetched_job_start_time } = latestJob;
 
@@ -1115,8 +1119,6 @@
                       latest_job_id = fetched_job_id;
                       latest_job_name = fetched_job_name;
                       latest_job_start_time = fetched_job_start_time;
-                  }else {
-                    return;
                   }
 
                   // Fetch logs for the current job
@@ -1131,12 +1133,12 @@
                       appendLogs(newLines);
                       previousLogLength = logs.length;
                   }
-                  
+
                   // Check if job is finished
                   finished = (status != "running");
 
                   // Wait before sending new fetch requests to the server
-                  await sleep(latest_job_id !== jobId ? 5000 : 2000);
+                  await sleep(latest_job_id !== jobId ? 5000 : 1000);
               }
           } catch (err) {
               console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream!`);
@@ -1146,11 +1148,7 @@
           } finally {
               // Final log message
               if (latest_job_id === jobId) {
-                  const isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 1;
-                  logOutput.textContent += "\n========= End of log stream =========\n";
-                  if (isAtBottom) {
-                      logContainer.scrollTop = logContainer.scrollHeight;
-                  }
+                  manually_write_to_log_window("========= End of log stream =========\n")
               }
               return status;
           }
@@ -1166,7 +1164,7 @@
        * @returns {dict} - Returns either info about the downloaded data in form of JSON or the raw response if it is not JSON.
       */
       async function uploadOutput(parameter_override_json, uuid_to_project_id_map, global_variable_snapshot, job_start_time, log_file_path) {
-        logOutput.textContent += 'Uploading results to OMERO...\n';
+        manually_write_to_log_window('Uploading results to OMERO...\n')
         const results = [];
         for (const key in parameter_override_json){
           if (key.includes("file-path")){
@@ -1213,7 +1211,9 @@
               key,
               folder_uuid,
               request: { path: path_to_output_folder, project_id, dataset_name },
-              response: data ?? { raw }
+              response: data ?? { raw },
+              num_imported_files: data.files_imported,
+              num_attached_files: data.files_attached,
             });
           }
         }
@@ -1342,7 +1342,19 @@
         }
       }
 
-
+      /**
+       * Writes the given message to the log window and does the sticky scrollbar check.
+       * @param {string} message - The message to be written to the log window
+      */
+      function manually_write_to_log_window(message){
+        const logContainer = logOutput.parentElement; // Log window DOM element
+        let isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 1;
+        logOutput.textContent += message;
+        if (isAtBottom) {
+          logContainer.scrollTop = logContainer.scrollHeight;
+        }
+      }
+      
       // =============== Initialization: fetch config and render UI =====================
       try {
         // Load the running jobs and available .jip files
@@ -1456,18 +1468,29 @@
             let { job_parameter_override, uuid_to_project_id_map } = await createJobPipelineParametersOverride(global_variable_snapshot);
             const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, global_variable_snapshot);
             loadRunningJobs();
+
             if (job_status === "finished"){
-              const response_JSON = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
-              console.log("Output upload info: ", response_JSON);
+              const output_infos = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
+
+              // Output the number of uploaded files to the log window
+              let num_imported_files = 0;
+              let num_attached_files = 0;
+              for (const entry of output_infos){
+                num_imported_files += entry["num_imported_files"];
+                num_attached_files += entry["num_attached_files"];
+              }
+              manually_write_to_log_window(`Uploaded ${num_imported_files} image(s) and attached ${num_attached_files} non-image file(s)!\n`);
+              console.log("Output upload info: ", output_infos);
             }
           }catch(err){
             console.error(`${err.name}: ${err.message}`)
-            logOutput.textContent += `Error: ${err.message}\nStopping the task.\n`
-            loadRunningJobs()
-          }finally{
+            logOutput.textContent += `\nError(s): ${err.message}\nStopping the task.\n\n`
+            loadRunningJobs()              
+            }
+          finally{
               if (global_variable_snapshot) {
                 try {
-                  logOutput.textContent += 'Cleaning filesystem...\n';
+                  manually_write_to_log_window('Cleaning filesystem...\n');
                   await remove_temp_directories([
                     global_variable_snapshot.temp_input,
                     global_variable_snapshot.temp_output
@@ -1475,10 +1498,10 @@
                 } catch (e) {
                   console.error('Cleanup error:', e);
                   // Optional: log to UI
-                  logOutput.textContent += `Cleanup error: ${e.message}\n`;
+                  manually_write_to_log_window(`Cleanup error: ${e.message}\n`);
                 }
               }
-              logOutput.textContent += 'JIPipeRunner finished!\n';
+              manually_write_to_log_window('JIPipeRunner finished!\n');
             }
         });                       
       }
