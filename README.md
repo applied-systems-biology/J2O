@@ -77,13 +77,17 @@ celery -A JIPipePlugin control shutdown
 ```
 
 ### Optional settings
-JIPipeRunner by default uses the home directory of the omero-web user to handle temporary file transfers (e.g. /home/omero-web/jipipe-runner). You can change these directories using these commands:
+JIPipeRunner by default uses the home directory of the omero-web user to handle temporary file transfers (e.g. /home/omero-web/jipipe-runner). You can change these directories using these commands as the omero-web user:
 ```bash
 omero config set omero.web.jipipe.tempdir "/path/to/tempdir"
 omero config set omero.web.jipipe.logdir "/path/to/logdir"
 ```
 
-The defined paths don't have to exist yet but will be created by the omero-web user if the permissions exist.Usually changing these should not be necessary. However, if you are experiencing permission errors or want to move the directories for any other reason you can do so.
+The defined paths don't have to exist yet but will be created by the omero-web user if the permissions exist. Usually changing these should not be necessary. However, if you are experiencing permission errors or want to move the directories for any other reason you can do so. Remember to restart OMERO.web to apply those changes by running this command as the omero-web user:
+```bash
+omero web restart
+```
+
 
 ## User guide
 After the installation is completed, you can login to your OMERO server. If the installation was successful, you should see a tab called **JIPipeRunner** in the right panel. 
