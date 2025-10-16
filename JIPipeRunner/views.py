@@ -33,13 +33,9 @@ from omero.cli import CLI, NonZeroReturnCode
 import omero.model as omodel
 from omero.model import ProjectI
 
-# Directory where JIPipe log files are stored (customize via Django settings)
-HOME = Path("~").expanduser()
-LOG_DIR = settings.JIPIPERUNNER_LOG_DIR or HOME / "jipipe-runner" / "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-
-JIPIPE_TEMP_DIR = settings.JIPIPERUNNER_TEMP_DIR or HOME / "jipipe-runner" / "data"
-os.makedirs(JIPIPE_TEMP_DIR, exist_ok=True)
+# Directory where JIPipe files are stored (customizable via Django settings)
+LOG_DIR = settings.JIPIPERUNNER_LOG_DIR
+JIPIPE_TEMP_DIR = settings.JIPIPERUNNER_TEMP_DIR
 
 # Time (in seconds) to keep PIDs in cache before expiring (None == never expire)
 CACHE_TIMEOUT: Optional[int] = None
@@ -209,7 +205,7 @@ def get_latest_jipipe_job(request, conn=None, **kwargs):
         active = cache.get(user_key, [])
 
         if not active:
-            return JsonResponse({'job_id': None, 'name': None, 'start_time': None})
+            return JsonResponse({'job_uuid': None, 'name': None, 'start_time': None, 'active_list': None})
 
         # Get the infos for the latest job
         latest_job_time = 0.0
@@ -222,7 +218,7 @@ def get_latest_jipipe_job(request, conn=None, **kwargs):
                 latest_job_time = absolute_start_time
                 latest_job_index = job_index
 
-        return JsonResponse({'job_uuid': active[latest_job_index]["job_uuid"],'name': active[latest_job_index]["name"], 'start_time': active[latest_job_index]["start_time"]})
+        return JsonResponse({'job_uuid': active[latest_job_index]["job_uuid"],'name': active[latest_job_index]["name"], 'start_time': active[latest_job_index]["start_time"], 'active_list': active})
     
     except Exception as e:
         return JsonResponse({'error': str(e), 'trace': traceback.format_exc(), 'active_jobs': active}, status=500)
@@ -234,7 +230,7 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
     Fetch the logs for a specific JIPipe job using its UUID.
     Expects the job UUID as a URL parameter.
     Returns a JSON response with the job status and log lines.
-    If the job is not found, returns a 404 error.
+    If the log is not found, returns a 400 error.
 
     URL: JIPipeRunner/fetch_jipipe_logs/<str:job_uuid>/
     param request: Django HTTP request object
@@ -249,8 +245,8 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
                 log_file_path = os.path.join(LOG_DIR, file)
         
         # Raise an error if the log file does not exist
-        if not os.path.exists(log_file_path):
-            return JsonResponse({"status": "pending", "logs": []}, status=204)
+        if not log_file_path:
+            return JsonResponse({'error': f'Error retrieving jipipe log: Log file has not been created yet'}, status=400)
 
         # Get the log lines from the file to return them
         with open(log_file_path, 'r') as file_handle:
@@ -538,6 +534,20 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
 
 def create_temp_directories(request) -> JsonResponse:
 
+    # Check permissions early (optional but recommended)
+    var_map = {"LOG_DIR": "omero.web.jipipe.logdir", "JIPIPE_TEMP_DIR": "omero.web.jipipe.tempdir"}
+    error_string = ""
+    for var in ["LOG_DIR", "JIPIPE_TEMP_DIR"]:
+        try:
+            path = Path(globals()[var])
+            os.makedirs(path, exist_ok=True)
+        except Exception as e:
+            error_string += f"\nCannot create or write to directory '{path}' defined in {var_map[var]}: {e}"
+
+    if len(error_string) > 0: 
+        error_string += "\n\nConsult your system administrator to change permissions on the server or change the file location in the config!"
+        return JsonResponse({'error': error_string}, status=500)
+
     # Create temporary directories for handling input and output
     temp_input = tempfile.mkdtemp(dir=JIPIPE_TEMP_DIR)
     temp_output = tempfile.mkdtemp(dir=JIPIPE_TEMP_DIR)
@@ -749,6 +759,7 @@ def upload_output(request, conn=None, **kwargs):
 
 
         # ---- Attach log.txt to the Dataset using ONLY raw services + the same ctx ----
+        attached = []
 
         if log_path and os.path.isfile(log_path):
             basename = os.path.basename(log_path)
@@ -809,6 +820,7 @@ def upload_output(request, conn=None, **kwargs):
                 dal.setParent(omodel.DatasetI(dataset_id, False))
                 dal.setChild(omodel.FileAnnotationI(fa.getId().getValue(), False))
                 u.saveAndReturnObject(dal, _ctx=ctx)
+                attached.append({"file": log_path, "type": "attachment"})
             # -----------------------------------------------------------------------------
 
         # Gather candidate files
@@ -821,7 +833,6 @@ def upload_output(request, conn=None, **kwargs):
         files_for_import = [p for p in candidates if os.path.splitext(p)[1].lower() in IMAGE_EXTS]
         files_for_attach = [p for p in candidates if p not in files_for_import]
 
-        attached = []
         if files_for_attach:
             for apath in files_for_attach:
                 try:

@@ -1,16 +1,40 @@
 # JIPipeRunner/settings.py (plugin scope, not the project)
 from pathlib import Path
 import os
+from omero.config import ConfigXml
+
+def get_omero_config(key: str, default: str) -> str:
+    try:
+        omerodir = os.environ.get("OMERODIR")
+        if not omerodir:
+            raise RuntimeError("OMERODIR environment variable not defined")
+        
+        # Build path to config.xml
+        cfg_path = os.path.join(omerodir, "etc", "grid", "config.xml")
+
+        # Load config
+        cfg = ConfigXml(cfg_path, read_only=True)
+
+        cfg_map = cfg.as_map()  # returns a dict of name → value
+
+        value = cfg_map.get(key)
+
+        # Return found value if not None
+        if value:
+            return value
+        
+        # Return default if no value is stored
+        return default
+    except Exception:
+        return default
+    finally:
+        cfg.close()
 
 HOME = Path("~").expanduser()
+# Plugin-specific defaults or OMERO overrides
+JIPIPERUNNER_TEMP_DIR = get_omero_config("omero.web.jipipe.tempdir", os.fspath(HOME / "jipipe-runner" / "data"))
+JIPIPERUNNER_LOG_DIR = get_omero_config("omero.web.jipipe.logdir", os.fspath(HOME / "jipipe-runner" / "logs"))
 
-# Plugin-specific defaults
-JIPIPERUNNER_TEMP_DIR = os.fspath(HOME / "jipipe-runner" / "data")
-JIPIPERUNNER_LOG_DIR  = os.fspath(HOME / "jipipe-runner" / "logs")
-
-# Let admins override these via `omero config set ...`
-CUSTOM_SETTINGS_MAPPINGS = {
-    # "omero.web.<yourprefix>.<name>": ["DJANGO_SETTING_NAME", <default>, <parser>]
-    "omero.web.jipipe.tempdir": ["JIPIPERUNNER_TEMP_DIR", JIPIPERUNNER_TEMP_DIR, str],
-    "omero.web.jipipe.logdir":  ["JIPIPERUNNER_LOG_DIR",  JIPIPERUNNER_LOG_DIR,  str],
-}
+# ==== For testing ====
+#JIPIPERUNNER_TEMP_DIR = os.path.join(os.path.sep, "mwank", "jipipe-runner", "data")
+#JIPIPERUNNER_LOG_DIR = os.path.join(os.path.sep, "mwank", "jipipe-runner", "logs")

@@ -6,11 +6,6 @@ import podman
 from podman.errors import ImageNotFound, NotFound
 from JIPipePlugin import settings
 
-# Directory where JIPipe log files are stored (customize via Django settings)
-HOME = Path("~").expanduser()     
-LOG_DIR = settings.JIPIPERUNNER_LOG_DIR or HOME / "jipipe-runner" / "logs"
-os.makedirs(LOG_DIR, exist_ok=True)
-
 """
 This task runs an ephemeral docker container that will execute the provided .jip file using JIPipe.
 It utilizes a temporary filesystem for input/output handling and will update the redis cache to track active tasks.
