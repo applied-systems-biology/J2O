@@ -548,7 +548,7 @@
         
         if (!response.ok) {
           console.error(`Error ${response.status}: ${responseJSON.error}\n${responseJSON.trace}`);
-          logOutput.textContent += `Error ${response.status}: ${responseJSON.error}`;
+          manually_write_to_log_window(`Error ${response.status}: ${responseJSON.error}`);
           return null;
         }
         return responseJSON;
@@ -848,7 +848,7 @@
       **/
       async function create_temp_directories(){
         // Create temp directories
-        logOutput.textContent += 'Initializing filesystem, please wait...\n';
+        manually_write_to_log_window('Initializing filesystem, please wait...\n');
         const response = await fetch('/JIPipeRunner/create_temp_directories/', {credentials: 'same-origin'});
 
         let data;
@@ -1084,7 +1084,7 @@
               if (!resp.ok) {
                   const errorJSON = await resp.json();
                   console.error(`Error ${resp.status}: ${errorJSON.error}\n${errorJSON.trace}`);
-                  logOutput.textContent += `${errorJSON.error}: Aborting log stream!\n`;
+                  manually_write_to_log_window(`${errorJSON.error}: Aborting log stream!\n`);
                   return null;
               }
               return await resp.json();
@@ -1104,7 +1104,7 @@
 
           try {
               // Initial message
-              logOutput.textContent += `Starting new task with JIPipe version ${global_variable_snapshot.jip_file_major_version}...\n\nFetching logs...\n`;
+              manually_write_to_log_window(`Starting new task with JIPipe version ${global_variable_snapshot.jip_file_major_version}...\n\nFetching logs...\n`);
 
               // Continue updating the log window until finished
               while (!finished) {
@@ -1143,7 +1143,7 @@
           } catch (err) {
               console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream!`);
               if (latest_job_id === jobId) {
-                  logOutput.textContent += `${err.name} while trying to update log window: ${err.message}\nAborting log stream!`;
+                  manually_write_to_log_window(`${err.name} while trying to update log window: ${err.message}\nAborting log stream!`);
               }
           } finally {
               // Final log message
@@ -1375,6 +1375,7 @@
             // Reset the global parameter override to be refilled
             jip_file_parameter_overrides = {};
             
+            // Declare and initialize variables for used DOM elements
             const infoSection = document.getElementById('jipipe_info_input_sections');
             const buffer_div = document.getElementById("buffer_div");
             const startRunnerBtn= document.getElementById('startRunnerBtn');
@@ -1394,8 +1395,10 @@
                 const tempOutput = buffer_div.querySelector('#output');
                 const tempParams = buffer_div.querySelector('#parameters');
 
-
+                // Get the JIPipe version of the selected file
                 jip_file_major_version = Number(jip_file_content["dependencies"][0]["version"].split(".")[0])
+
+                // Read the node graph from the .jip file and use it to dynamically fill the UI
                 const nodesMap = jip_file_content.graph.nodes;
                 const graphEdges = jip_file_content.graph.edges;
                 const {inputCount, outputCount } = displayNodeSummary(nodesMap, tempFileInfo);
@@ -1403,13 +1406,15 @@
                 createParameterFields(jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters'], nodesMap, tempParams);
                 await createOutputProjectInputFields(nodesMap, graphEdges, tempOutput);
 
-                // Activate elements after loading is done
-                if (inputCount > 0 && outputCount > 0){  // Start button only enabled if the .jip file has at least one input and one output node
+                // Start button only enabled if the .jip file has at least one input and one output node
+                if (inputCount > 0 && outputCount > 0){  
                   startRunnerBtn.disabled = false;
                 }else{
                   startRunnerBtn.disabled = true;
                 }
-                infoSection.replaceChildren(...buffer_div.childNodes);  // Replace the visible infoSection with the content of the buffer div
+
+                // Replace the visible infoSection with the content of the buffer div
+                infoSection.replaceChildren(...buffer_div.childNodes);
                 infoSection.style.display = "block";
               }
             // If no .jip file is selected, reset the info sections to their original empty state
@@ -1450,10 +1455,14 @@
             startRunnerBtn.textContent = "Start JIPipeRunner";
           }, 1000);
 
+          // Define a snapshot variable to save current global variables and announce start to the user
           let global_variable_snapshot = null;
-          logOutput.textContent = 'Starting JIPipeRunner...\n';
+          manually_write_to_log_window('Starting JIPipeRunner...\n');
+
           try{
             event.preventDefault();
+
+            // Create directories in filsystem to handle I/O of JIPipe
             await create_temp_directories();
             
             // Take a snapshot of global variables for this run (needs to be done to prevent override when switching .jip file or starting new run in GUI)
@@ -1465,28 +1474,34 @@
               temp_output,
             };
 
+            // Create the parameter override containing user input to be provided to JIPipe
             let { job_parameter_override, uuid_to_project_id_map } = await createJobPipelineParametersOverride(global_variable_snapshot);
+
+            // Execute JIPipe and facilitate the log window livestream
             const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, global_variable_snapshot);
             loadRunningJobs();
 
-            if (job_status === "finished"){
-              const output_infos = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
+            // Upload the output (and the logfile, even when no output is generated)
+            const output_infos = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
 
-              // Output the number of uploaded files to the log window
-              let num_imported_files = 0;
-              let num_attached_files = 0;
-              for (const entry of output_infos){
-                num_imported_files += entry["num_imported_files"];
-                num_attached_files += entry["num_attached_files"];
-              }
-              manually_write_to_log_window(`Uploaded ${num_imported_files} image(s) and attached ${num_attached_files} non-image file(s)!\n`);
-              console.log("Output upload info: ", output_infos);
+            // Output the number of uploaded files to the log window
+            let num_imported_files = 0;
+            let num_attached_files = 0;
+            for (const entry of output_infos){
+              num_imported_files += entry["num_imported_files"];
+              num_attached_files += entry["num_attached_files"];
             }
+            manually_write_to_log_window(`Uploaded ${num_imported_files} image(s) and attached ${num_attached_files} non-image file(s)!\n`);
+            console.log("Output upload info: ", output_infos);
+
+          // Catch errors and display a useful message to the user depending on the caught error
           }catch(err){
             console.error(`${err.name}: ${err.message}`)
-            logOutput.textContent += `\nError(s): ${err.message}\nStopping the task.\n\n`
+            manually_write_to_log_window(`\nError(s): ${err.message}\nStopping the task.\n\n`);
             loadRunningJobs()              
-            }
+          }
+
+          // Always clean filesystem if temporary directories were created
           finally{
               if (global_variable_snapshot) {
                 try {
@@ -1497,7 +1512,6 @@
                   ]);
                 } catch (e) {
                   console.error('Cleanup error:', e);
-                  // Optional: log to UI
                   manually_write_to_log_window(`Cleanup error: ${e.message}\n`);
                 }
               }
