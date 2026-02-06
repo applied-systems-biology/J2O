@@ -34,7 +34,3 @@ HOME = Path("~").expanduser()
 # Plugin-specific defaults or OMERO overrides
 JIPIPERUNNER_TEMP_DIR = get_omero_config("omero.web.jipipe.tempdir", os.fspath(HOME / "jipipe-runner" / "data"))
 JIPIPERUNNER_LOG_DIR = get_omero_config("omero.web.jipipe.logdir", os.fspath(HOME / "jipipe-runner" / "logs"))
-
-# ==== For testing ====
-#JIPIPERUNNER_TEMP_DIR = os.path.join(os.path.sep, "mwank", "jipipe-runner", "data")
-#JIPIPERUNNER_LOG_DIR = os.path.join(os.path.sep, "mwank", "jipipe-runner", "logs")
