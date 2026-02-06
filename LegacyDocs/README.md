@@ -1,0 +1,2 @@
+# Legacy J2O documentation
+Here you can find the legacy documentation for J2O prior to the JIPipe 6.0.0 integration update. You can find the up-to-date documentation on [the J2O documentation website](https://example.com/)
