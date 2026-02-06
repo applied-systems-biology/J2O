@@ -4,7 +4,6 @@ from pathlib import Path
 from django.core.cache import cache
 import podman
 from podman.errors import ImageNotFound, NotFound
-from JIPipePlugin import settings
 
 """
 This task runs an ephemeral docker container that will execute the provided .jip file using JIPipe.
@@ -19,7 +18,7 @@ param temp_input: Path to the temporary input directory in the filesystem to sto
 param temp_output: Path to the temporary output directory in the filesystem to store JIPipe output
 """
 @shared_task(bind=True, acks_late=True)
-def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None):
+def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_json: dict, user_directory_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None):
 
     # Initialize logging
     log = logging.getLogger(__name__)
@@ -33,10 +32,10 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         client = podman.PodmanClient(base_url=base_url)  # Podman REST API client
 
         # Dump input into temp directory
-        (Path(temp_input) / "JIPipeProject.jip").write_text(json.dumps(jipipe_project_config))
-        (Path(temp_input) / "JIPipeProject_Parameter_Override.json").write_text(
-            json.dumps(parameter_override_json)
-        )
+        if not (Path(temp_input) / "project.jip").is_file(): # Create project.jip for non RO-crate projects
+            (Path(temp_input) / "project.jip").write_text(json.dumps(jipipe_project_config))
+        (Path(temp_input) / "JIPipeProject_Parameter_Override.json").write_text(json.dumps(parameter_override_json))
+        (Path(temp_input) / "JIPipeProject_User_Directory_Override.json").write_text(json.dumps(user_directory_override_json))
 
         # Run the container on the image corresponding to the JIPipe version
         repo    = f"docker.io/mariuswank/jipipe_headless"
@@ -51,23 +50,26 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
                 tag=tag,
                 stream=True,          # <- stream progress
                 decode=True,          # <- yield dicts, not bytes
-                policy="always"      # <- only pull if not present
+                policy="newer"      # <- only pull if newer version exists
             ):
 
             stream = evt.get("stream")
-            line = f"[pull] {stream}"
             with open(jipipe_log_file_path, "a") as logfile:
-                logfile.write(line)
+                logfile.write(f"[pull] {stream}")
 
         with open(jipipe_log_file_path, "a") as logfile:
                 logfile.write(f"\n[pull] Found image {image}")
 
         command = [
             "run",
-            "--project",              f"{temp_input}/JIPipeProject.jip",
+            "--project",              f"{temp_input}/project.jip",
             "--overwrite-parameters", f"{temp_input}/JIPipeProject_Parameter_Override.json",
+            "--overwrite-user-directories", f"{temp_input}/JIPipeProject_User_Directory_Override.json",
             "--output-folder",        f"{temp_output}",
         ]
+
+        if jipipe_version >= 4:
+             command.append("--fast-init")
 
         container = client.containers.run(
             image,
@@ -84,10 +86,18 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         )
 
         # Stream the log
-        for chunk in container.logs(stream=True, follow=True):
-            decoded = chunk.decode()
-            with open(jipipe_log_file_path, "a") as logfile:
-                logfile.write(f"\n{decoded}")
+        while True:
+            for chunk in container.logs(stream=True, follow=True):
+                decoded = chunk.decode()
+                with open(jipipe_log_file_path, "a") as logfile:
+                    logfile.write(f"\n{decoded}")
+            
+            container.reload()
+            if bool(container.attrs.get("State", {}).get("Running")):
+                 continue
+            else:
+                 break
+
         
         exit_code = container.wait(condition="exited")
         with open(jipipe_log_file_path, "a") as logfile:

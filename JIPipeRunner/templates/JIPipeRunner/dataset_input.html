@@ -172,13 +172,76 @@
     }
 
     /* Red cross button styling */
+    .job-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0.75rem;
+      border-radius: 6px;
+      background: #f6f7f9;
+      margin-bottom: 0.4rem;
+    }
+
+    .job-meta {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .job-name {
+      font-weight: 600;
+    }
+
+    .job-time {
+      font-size: 0.8rem;
+      color: #666;
+    }
+
     .cancel-btn {
-      background: none;
+      background: transparent;
       border: none;
-      color: red;
-      font-size: 1.2em;
+      color: #999;
+      font-size: 1.1rem;
       cursor: pointer;
-      margin-left: 8px;
+    }
+
+    .cancel-btn:hover {
+      color: #c0392b;
+    }
+
+    #runningJobsList {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+
+    display: grid;
+    gap: 8px;
+
+    /* multiple items per row when there’s space */
+    grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+    }
+
+    /* each <li> should not force its own flex sizing */
+    #runningJobsList > li {
+      margin: 0;
+    }
+
+    /* make the card fill the grid cell */
+    #runningJobsList .job-item {
+      width: 100%;
+      box-sizing: border-box;
+      margin: 0; /* important: gap handles spacing */
+    }
+
+    /* allow text inside the flex card to shrink instead of pushing width */
+    #runningJobsList .job-meta {
+      min-width: 0;
+    }
+
+    #runningJobsList .job-name,
+    #runningJobsList .job-time {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     #running-jobs ul {
       list-style: none;
@@ -368,20 +431,30 @@
       // ============= global variables used across the script ====================
       let jip_file_content = null;  // Holds the fetched .jip file contents
       let jip_file_parameter_overrides = {}; // Holds user-defined parameter overrides
+      let jip_file_user_directory_overrides = {}; // Holds user-defined user directory overrides
       let jip_file_name = null;  // Holds the name of the selected .jip file
       let jip_file_major_version = null; // Holds the version number of the current .jip file
       let temp_input = null;  // Path where input for JIPipe is stored temporarily
       let temp_output = null;  // Path where output of JIPipe is stored temporarily
+      let selectedJipFileID = null;
       const activeJobs = new Set();  // Set to track currently running jobs
       const csrftoken = getCookieValue('csrftoken');  // CSRF token for secure requests
       const originalInfoState = document.getElementById('jipipe_info_input_sections').innerHTML;  // Store the original state of the info containers
       const TomSelectDataArchetypes = ["SingleSelect"] // List of all datatypes that should utilize TomSelect
       const AllowMultipleOptionsDataArchetypes = []  // List of all data-archetypes that should utilize the TomSelect multiple tag
       const logOutput = document.getElementById('logOutput');  // DOM element that contains log output
-      const LOAD_JOBS_INTERVAL = 5  // Time in seconds to update running job list  
+      const LOAD_JOBS_INTERVAL = 5  // Time in seconds to update running job list
+      const MAX_CHARS_LOG_DISPLAY = 2_000_000; // Limits the number of lines displayed in the log stream to prevent large log slowdown
+      
+      // Map that links the node-info-id of valid dataset input nodes to their respective entry that shows where the data is located
+      const validDatasetInput_nodeInfoID_to_referencePath_map = {"import-file-list": "file-names", 
+                                                                 "import-folder-list": "folder-paths",
+                                                                 "import-folder": "folder-path",
+                                                                 "import-file": "file-name"}
 
 
       // ============= Functions that load the initial UI depending on .jip file selection ==================
+
       /**
        * Get currently running jobs reference from the server cache
        * and populate the running jobs section accordingly.
@@ -449,8 +522,15 @@
 
         // Populate the job list item with the job ID and a cancel button
         job_list_item.innerHTML = `
-          <span class="job-id">${start_time}: ${name}</span>
-          <button class="cancel-btn" title="Cancel job">&#10006;</button>
+          <div class="job-item">
+            <div class="job-meta">
+              <span class="job-name">${name}</span>
+              <span class="job-time">${start_time}</span>
+            </div>
+            <button class="cancel-btn" title="Cancel job" aria-label="Cancel job">
+              ✕
+            </button>
+          </div>
         `;
 
         // Add an event listener to the cancel button to stop the job when clicked (awaiting confirmation by user first)
@@ -556,18 +636,28 @@
 
       /**
        * Display a summary of the nodes in the chosen .jip file in the "Node Summary" section.
-       * @param {Object} nodesMap - The map of nodes in the pipeline configuration
+       * @param {JSON} nodesMap - The map of nodes in the pipeline configuration
+       * @param {HTMLElement} container - The container to display the content in
        */
       function displayNodeSummary(nodesMap, container) {
         try{
           // Filter nodes to count total, input, and output nodes according to pipeline conventions
           const allNodes = Object.values(nodesMap);
-          const inputCount = allNodes.filter(node => node['jipipe:alias-id']?.includes('folder-list')).length;
-          const outputCount = allNodes.filter(node => node['jipipe:alias-id']?.includes('export')).length;
+          
+          // Count all nodes as input that are defined as inputs node according to the validInput_nodeInfoID_to_referencePath_map or are project-user-directory nodes
+          const inputCount = allNodes.filter(node =>
+            typeof node["jipipe:node-info-id"] === "string" &&
+            Object.keys(validDatasetInput_nodeInfoID_to_referencePath_map).some(key => node["jipipe:node-info-id"] === key || node["jipipe:node-info-id"] === "project-user-directory")).length;
+
+          // Count all nodes as output that include "export" in their node-info-id
+          const outputCount = allNodes.filter(node => node['jipipe:node-info-id']?.includes('export')).length;
+
+          // Display counts to UI
           container.innerHTML += `<p>Total nodes: ${allNodes.length}</p>`;
           container.innerHTML += `<p>Input nodes: ${inputCount}</p>`;
           container.innerHTML += `<p>Output nodes: ${outputCount}</p>`;
           return { inputCount, outputCount };
+        
         }catch(err){
           console.error(`${err.name} constructing summary: ${err.message}`)
           container.innerHTML = `<p style="color:red;">Error constructing summary: ${err.message}</p>`;
@@ -576,9 +666,11 @@
 
       /**
        * Create input fields for dataset IDs based on the input nodes in the given .jip file nodeMap.
-       * @param {Object} nodesMap - The map of nodes in the selected .jip file
+       * @param {JSON} nodesMap - The map of nodes in the selected .jip file
+       * @param {JSON} userDirectories - The user directories stored in the .jip file
+       * @param {HTMLElement} container - The container to display the content in
        */
-      async function createDatasetInputFields(nodesMap, container) {
+      async function createDatasetInputFields(nodesMap, userDirectories, container) {
         try{
           // Request all available datasets that can be used as input from the server
           const response = await fetch('/JIPipeRunner/list_available_datasets/', { credentials: 'same-origin' });
@@ -593,47 +685,61 @@
           // Save the available_datasets JSON response to use it later
           const { available_datasets } = await response.json();
 
-          // Iterate over the nodes and create input fields for those with 'define-dataset-ids' alias (input nodes according to JIPRunner convention)
-          Object.entries(nodesMap).forEach(([uuid, node]) => {
-            if (node['jipipe:alias-id']?.includes('folder-list')) {
-              // Create a new input row for the dataset ID
-              const row = document.createElement('div');
-              row.className = 'input-row';
+          // Map the entries from the available datasets from the server to have them as input for TomSelect
+          const dataset_items = available_datasets.map(dataset => ({
+            value: dataset.dataset_id,
+            name: dataset.dataset_name
+          }));
 
-              // Create a reference ID based on the UUID given by the nodeMap
-              const inputId = `${crypto.randomUUID()}|${uuid}/folder-paths`;
+          // Enable users to use original data used from developer (only JIPipe 6 compatible because of RO-Crate)
+          if (jip_file_major_version === 6 && jip_file_name.endsWith(".zip")){
+            dataset_items.push({ value: "Original data", name: "Use original data" });
+          }
 
-              // Get the value from the .jip file if available, or use an empty string as a placeholder
-              const id_placeholder = null;
+          // Iterate over user directories and create input fields for them
+          userDirectories.forEach(user_dir_dict => {
 
-              // Create the parameter override key
-              jip_file_parameter_overrides[inputId] = id_placeholder;
+            // Get key name for user dir
+            const key_name = user_dir_dict.parameters.key.value;
+            if (!key_name.includes("input")) return;
 
-              // Create a label and select element for the Dataset IDs input field
-              const label = document.createElement('label');
-              label.htmlFor = inputId;
-              label.textContent = node['jipipe:node:name'];
-
-              const selector = document.createElement('select');
-              selector.id = inputId;
-              selector.multiple = true;
-              selector.placeholder = id_placeholder;
-
-              // Map the entries from the available datasets from the server to have them as input for TomSelect
-              const items = available_datasets.map(dataset => ({
-              value: dataset.dataset_id,
-              name: dataset.dataset_name
-              }));
-
-              // Attach the elements to DOM
-              row.appendChild(label);
-              row.appendChild(selector);
-              container.appendChild(row);
-
-              // Transform the select element to a TomSelect field
-              transformSelectElementToTomSelect(select_element_id=inputId, option_items=items, placeholder_value=id_placeholder, section="I/O");
-            };
+            addTomSelectElementToUI({
+              container,
+              id: key_name,
+              labelText: `User directory: ${key_name}`,
+              items: dataset_items.map(x => ({ ...x })), // Deep copy required to avoid TomSelect shared-object weirdness
+              placeholder: null,
+              overrideMap: jip_file_user_directory_overrides,
+              overrideKey: key_name,
+              section: "I/O",
+            });
           });
+          
+          // Iterate over the nodes and create input fields for those nodes with a node-info-id associated with input nodes
+          Object.entries(nodesMap).forEach(([uuid, node]) => {
+
+            const nodeInfoId = node["jipipe:node-info-id"];
+            if (typeof nodeInfoId !== "string") return;
+
+            const matchedKey = Object.keys(validDatasetInput_nodeInfoID_to_referencePath_map)
+              .find(key => nodeInfoId === key);
+            if (!matchedKey) return;
+
+            const inputId = `${crypto.randomUUID()}|${uuid}/${validDatasetInput_nodeInfoID_to_referencePath_map[matchedKey]}`;
+            const name = node["jipipe:node:name"];
+
+            addTomSelectElementToUI({
+              container,
+              id: inputId,
+              labelText: name,
+              items: dataset_items.map(x => ({ ...x })), // Deep copy required to avoid TomSelect shared-object weirdness
+              placeholder: null,
+              overrideMap: jip_file_parameter_overrides,
+              overrideKey: inputId,
+              section: "I/O",
+            });
+          });
+        
         }catch (err){
           console.error(`${err.name} constructing Dataset input fields: ${err.message}`);
           container.innerHTML = `<p style="color:red;">${err.name} constructing Dataset input fields: ${err.message}</p>`;
@@ -642,8 +748,9 @@
 
       /**
        * Create input fields for parameters based on the metadata from the .jip file.
-       * @param {Object} paramsMetadata - The metadata containing parameter definitions
-       * @param {Object} nodesMap - The map of nodes in the selected .jip file
+       * @param {JSON} paramsMetadata - The metadata containing parameter definitions
+       * @param {JSON} nodesMap - The map of nodes in the selected .jip file
+       * @param {HTMLElement} container - The container to display the content in
        */
       function createParameterFields(paramsMetadata, nodesMap, container) {
         try{
@@ -751,19 +858,12 @@
 
       /**
        * Create input fields for project IDs based on the output nodes in the given .jip file nodeMap.
-       * @param {Object} nodesMap - The map of nodes in the selected .jip file
-       * @param {Object} graphEdges - The edges of the graph in the .jip file
+       * @param {JSON} nodesMap - The map of nodes in the selected .jip file
+       * @param {JSON} userDirectories - The user directories stored in the .jip file
+       * @param {HTMLElement} container - The container to display the content in
        */
-      async function createOutputProjectInputFields(nodesMap, graphEdges, container) {
+      async function createOutputProjectInputFields(nodesMap, userDirectories, container) {
         try{
-          // Set output display according to "Enable output config" checkbox
-          if (document.getElementById("enableOutputConfig").checked){
-            container.style.display = "block"
-          }
-          else{
-            container.style.display = "none"
-          }
-
           // Request all available projects that can be used as input from the server
           const response = await fetch('/JIPipeRunner/list_available_projects/', { credentials: 'same-origin' });
 
@@ -777,64 +877,79 @@
           // Save the available_projects JSON response to use it later
           const { available_projects } = await response.json();
 
+          // Map the entries from the available projects from the server to have them as input for TomSelect
+          const project_items = available_projects.map(project => ({
+          value: project.project_id,
+          name: project.project_name
+          }));
+
+          // Define placeholder value to be used when user does not select a custom project
+          const NO_PROJECT_INPUT_VALUE = -1; // Project IDs can't be negative, so when user doesn't enter something we can identify thats
+
+          // Iterate over user directories and create input fields for them
+          userDirectories.forEach(user_dir_dict => {
+
+            // Get the user directory name, skip entry if user_dir is not defined as output
+            const key_name = user_dir_dict.parameters.key.value;
+            if (!key_name.includes("output")) return;
+
+            // add the TomSelect element to DOM
+            const { row, selector } = addTomSelectElementToUI({
+              container,
+              id: key_name,
+              labelText: `User directory: ${key_name}`,
+              items: project_items.map(x => ({ ...x })), // avoid TomSelect shared-object weirdness
+              placeholder: NO_PROJECT_INPUT_VALUE,
+              overrideMap: jip_file_user_directory_overrides,
+              overrideKey: key_name,
+              section: "I/O",
+            });
+
+            // Only allow users to select one output Project per node
+            selector.multiple = false;
+
+            // add dataset-name input to the SAME row element in DOM
+            addTextInputToRow({
+              row,
+              id: `${key_name}/dataset-name`,
+              labelText: "Output dataset name:",
+              placeholder: `${jip_file_name}`,
+            });
+          });
+
           // Iterate over the nodes and create input fields for those with 'define-dataset-ids' alias (input nodes according to JIPRunner convention)
           Object.entries(nodesMap).forEach(([uuid, node]) => {
-            if (node['jipipe:alias-id']?.includes('export')) {
 
-              // Create a new input row for the dataset ID
-              const row = document.createElement('div');
-              row.className = 'input-row';
+            // Skip entry if current node is not an export node
+            if (!node["jipipe:alias-id"]?.includes("export")) return;
 
-              // Create a reference ID based on the UUID given by the nodeMap
-              const inputId = `${crypto.randomUUID()}|${uuid}/file-path`;
+            // Define ID of input element to reference later (randomUUID in front because TomSelect is weird)
+            const inputId = `${crypto.randomUUID()}|${uuid}/file-path`;
 
-              // Get the value from the .jip file if available, or use an empty string as a placeholder
-              const existingIds = -1;  // Project IDs can't be negative, so when user doesn't enter something we can identify thats
+            // Add TomSelect element to DOM
+            const { row, selector } = addTomSelectElementToUI({
+              container,
+              id: inputId,
+              labelText: node["jipipe:node:name"],
+              items: project_items.map(x => ({ ...x })),
+              placeholder: NO_PROJECT_INPUT_VALUE,
+              overrideMap: jip_file_parameter_overrides,
+              overrideKey: inputId,
+              section: "I/O",
+            });
 
-              // Create a label and select element for the Project IDs input field
-              const label = document.createElement('label');
-              label.htmlFor = inputId;
-              label.textContent = node['jipipe:node:name'];
+            // Only allow users to select one output Project per node
+            selector.multiple = false;
 
-              const selector = document.createElement('select');
-              selector.id = inputId;
-              selector.multiple = false;
-              selector.placeholder = existingIds;
-
-              // Map the entries from the available projects from the server to have them as input for TomSelect
-              const items = available_projects.map(project => ({
-              value: project.project_id,
-              name: project.project_name
-              }));
-
-              // Attach the elements to DOM
-              row.appendChild(label);
-              row.appendChild(selector);
-
-              // Create input field for the output dataset name
-              const name_input_field = document.createElement('input');
-              name_input_field.type = 'text';
-              name_input_field.placeholder = `${jip_file_name}`;
-              name_input_field.id = `${uuid}/dataset-name`;
-
-              // Create label for the output dataset name input field
-              const name_label = document.createElement('label');
-              name_label.htmlFor = name_input_field.id;
-              name_label.textContent = `Output dataset name:`;
-
-              row.appendChild(name_label);
-              row.appendChild(name_input_field);
-
-              // Append the row to the input fields container if the node is connected to any other nodes
-              container.appendChild(row);
-
-              // Transform the select element to a TomSelect element
-              transformSelectElementToTomSelect(select_element_id=inputId, option_items=items, placeholder_value=existingIds, section="I/O")
-
-              // Create the parameter override key for the Project IDs
-              jip_file_parameter_overrides[inputId] = existingIds;          
-            }
+            // add dataset-name input to the SAME row element in DOM
+            addTextInputToRow({
+              row,
+              id: `${uuid}/dataset-name`,
+              labelText: "Output dataset name:",
+              placeholder: `${jip_file_name}`,
+            });
           });
+        
         }catch(err){
           console.error(`${err.name} constructing Project input fields: ${err.message}`);
           container.innerHTML = `<p style="color:red;">${err.name} constructing Project input fields: ${err.message}</p>`;
@@ -843,8 +958,9 @@
 
 
       // =============== Function that facilitate the execution of a job after starting it ===================
+
       /**
-       * Create two temporary directories in the /tmp directory to store in- and output temporarily.
+       * Create two temporary directories in the JIPIPERUNNER_TEMP_DIR defined by the admin to store in- and output temporarily.
       **/
       async function create_temp_directories(){
         // Create temp directories
@@ -859,7 +975,7 @@
         }
 
         if (!response.ok) {
-          // Re-throw as an Error so your outer catch picks it up
+          // Re-throw as an Error so outer catch picks it up
           throw new Error(data.error || "Unknown error while creating temp directories");
         }
 
@@ -868,50 +984,63 @@
       }
 
       /**
-      * Overrides the pipeline parameters based on user input. It calls create_temp_subdirectories() for each input and output node and downloads the input from OMERO via downloadInput().
+      * Overrides the pipeline parameters and user directories based on user input. It calls create_temp_subdirectories() 
+      * for each input and output node and downloads the input from OMERO via downloadInput().
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       * @returns {dict} - A dictionary that contains the key/value combinations for the JIPipe parameter override.
       */
-      async function createJobPipelineParametersOverride(global_variable_snapshot) {
+      async function createJobPipelineOverride(global_variable_snapshot) {
         try{
           // Get the status of the enableConfig checkbox to see whether output parameters needs to be overwritten
           const customOutputConfigEnabled = document.getElementById('enableOutputConfig').checked;
 
-          // Copy the jip_file_parameter_overrides to create a custom override for each job
+          // Copy the parameter_overrides to create a custom override for each job
           let job_parameter_override = { ...jip_file_parameter_overrides };
+          let job_user_directory_override = { ...jip_file_user_directory_overrides };
 
           let finalValue = null;
 
+          // Create a map that links the UUID (i.e. the name) of the temp_output folder to the destination project ID in OMERO
           let uuid_to_project_id_map = {};
 
           // Iterate the parameter_override dict to change the values according to user input
           for (const [key, _] of Object.entries(jip_file_parameter_overrides)) {
 
-            // Get element that holds selected option(s)
-            const inputElement = document.getElementById(`${key}`);
-
-            let inputValue = "0";
-            if (inputElement.tagName === 'SELECT' && inputElement.multiple){
-              const inputValueArray = Array.from(inputElement.selectedOptions).map(option => option.value);
-              inputValue = inputValueArray.length != 0 ? inputValueArray.join(', ') : inputElement.placeholder
-              if (!inputValue){
-                throw new Error("Empty input fields must be filled!")
-              }
-            }
-            else {
-              inputValue = inputElement.value !== "" ? inputElement.value : inputElement.placeholder;
+            // Get the input error from DOM element. If it does not exist, skip!
+            const { exists, inputValue } = getInputValueOrThrow(key);
+            if(!exists){
+              console.log(`No input DOM element for ${key} (stored in parameter override)!`);
+              continue;
             }
 
-            // Handle input and output nodes differently since they store info for API calls
-            if (key.includes("folder-paths")){
-              const folder_uuid = key.split("|")[1].split('/')[0];
-              const destination_path = `${global_variable_snapshot.temp_input}/${folder_uuid}`
-              finalValue = [destination_path];
+            // Ignore parameter overrides for use of original data (JIPipe 6 only)
+            if (inputValue === "Original data"){
+              delete job_parameter_override[key];
+              continue;
+            }
+            
+            // Check if key is considered dataset input according to map 
+            const matchedValue = Object.values(validDatasetInput_nodeInfoID_to_referencePath_map).find(value => key.includes(value));
+
+            // Get the folder_uuid, used to determine location to save input/output to in temp_dirs
+            const folder_uuid = key.split("|")[1].split('/')[0];
+
+            // If dataset input node: create temp dirs and download OMERO data to that location and set value of parameter override to destination path
+            if (matchedValue){
+              const destination_path = `${global_variable_snapshot.temp_input}/${folder_uuid}`;
               await create_temp_subdirectories(global_variable_snapshot.temp_input, folder_uuid);
               const responseJSON = await downloadInput(destination_path, inputValue);
-              console.log("Input info: ", responseJSON)
+              console.log("Input object info: ", responseJSON);
+              
+              // Need to differ between list of entries or singular entry
+              if (matchedValue.endsWith("s")) {
+              finalValue = [destination_path];
+              } else {
+              finalValue = destination_path;
+              }
+            
+            // If export node: Change the expression in file-path and add the expression to the parameter override
             }else if (key.includes("file-path")){
-              const folder_uuid = key.split("|")[1].split('/')[0];
               uuid_to_project_id_map[folder_uuid] = inputValue;
               const expressionPath = `PATH_COMBINE("${global_variable_snapshot.temp_output.replace(/\\/g, '\\\\')}/${folder_uuid}/", auto_file_name)`;  //TODO: Figure out how to name the files
               finalValue = {expression: expressionPath};
@@ -923,21 +1052,53 @@
             // Overwrite the entry with the JIPipe compatible value and discard random UUID before key
             delete job_parameter_override[key];
             job_parameter_override[key.split("|")[1]] = finalValue; // Weird split needs to happen cause we need random value before key for TomSelect uniqueness
+          }
 
-            // If output config should not be used, delete unnecessary entries from the dict
-            if (!customOutputConfigEnabled) {
-              const nodesMap = global_variable_snapshot.jip_file_content.graph.nodes;
-              const uuid = key.split("|")[1].split('/')[0];
-              const node = nodesMap[uuid];
-              const isDefineProjectNode = node['jipipe:alias-id']?.includes('define-project-ids');
-              const isCreateDatasetNode = node['jipipe:alias-id']?.includes("create-omero-dataset");
-              if (isDefineProjectNode || isCreateDatasetNode) {
-                delete job_parameter_override[key.split("|")[1]];
+          // Print content to console for checking correctness!
+          console.log("JIPipe parameter override input: ", job_parameter_override);
+          
+          // Iterate the user_directory_override dict to change the values according to user input
+          for (const [key, _] of Object.entries(jip_file_user_directory_overrides)) {
+            
+            // Get the input error from DOM element. If it does not exist, skip!
+            const { exists, inputValue } = getInputValueOrThrow(key);
+            if(!exists){
+              console.log(`No input DOM element for ${key} (stored in user directory override)!`);
+              continue;
+            }
+
+            // Ignore parameter overrides for use of original data (JIPipe 6 only)
+            if (inputValue === "Original data"){
+              delete job_user_directory_override[key];
+              continue;
+            }
+            else{
+              // Set destination dir depending on user dir key (input or output)
+              let destination_directory = global_variable_snapshot.temp_input;
+              if (key.includes("output")){
+                destination_directory = global_variable_snapshot.temp_output;
+                uuid_to_project_id_map[key] = inputValue;
               }
+
+              // Create subdirectories in temporary folder
+              const destination_path = `${destination_directory}/${key}`
+              await create_temp_subdirectories(destination_directory, key);
+
+              // Only put input data from OMERO in temp folder if user dir is marked as input
+              if (key.includes("input")){
+                const responseJSON = await downloadInput(destination_path, inputValue);
+                console.log("Input object info: ", responseJSON)
+              }
+
+              // Overwrite the entry with the JIPipe compatible value
+              job_user_directory_override[key] = destination_path;
             }
           }
-          console.log("JIPipe override input: ", job_parameter_override);
-          return {job_parameter_override, uuid_to_project_id_map};
+          
+          // Print content to console for checking correctness!
+          console.log("JIPipe user directory override input: ", job_user_directory_override);
+
+          return {job_parameter_override, job_user_directory_override, uuid_to_project_id_map};
         }catch(err){
           throw new Error(`Error trying to create parameter override: ${err.message}`)
         }
@@ -966,7 +1127,7 @@
       /**
        * Downloads the images from the OMERO dataset specified by dataset_ID to the given destination_path.
        * @param {string} destination_path - Path to the download destination folder.
-       * @param {int} dataset_ID - The OMERO dataset ID from which the images should be downloaded.
+       * @param {string} dataset_ID - The OMERO dataset ID(s) (comma separated) from which the images should be downloaded.
        * @returns {dict} - Returns either info about the downloaded data in form of JSON or the raw response if it is not JSON.
       */
       async function downloadInput(destination_path, dataset_ID) {
@@ -1006,7 +1167,9 @@
       * @param {dict} job_parameter_override - The parameter_overwrite dict that will be passed to JIPipe.
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       */
-      async function executePipelineJob(job_parameter_override, global_variable_snapshot) {
+      async function executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot) {
+
+        console.log(`Workflow file: ${global_variable_snapshot.jip_file_content}`);
 
         // Send a request to the server to start the job
         const response = await fetch('/JIPipeRunner/jipipe_start_job/', {
@@ -1019,11 +1182,13 @@
           body: JSON.stringify({
             jip_content: global_variable_snapshot.jip_file_content,
             jip_parameter_overrides: job_parameter_override,
+            jip_user_directory_overrides: job_user_directory_override,
             jip_name: global_variable_snapshot.jip_file_name,
             custom_output_config_enabled: document.getElementById('enableOutputConfig').checked,
             major_version: global_variable_snapshot.jip_file_major_version,
             input_path: global_variable_snapshot.temp_input,
-            output_path: global_variable_snapshot.temp_output
+            output_path: global_variable_snapshot.temp_output,
+            jip_file_id: global_variable_snapshot.selectedJipFileID
           })
         });
 
@@ -1048,7 +1213,7 @@
 
       /**
       * Continuously fetch logs for the given job ID and update the log output.
-      * @param {int} jobId - The ID of the job of which the log should be fetched.
+      * @param {string} jobId - The ID of the job of which the log should be fetched.
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       */
       async function updateLogWindow(jobId, global_variable_snapshot) {
@@ -1163,59 +1328,75 @@
        * @param {string} job_start_time - A string containing the start time of the job for tagging the default folder with a timestamp.
        * @returns {dict} - Returns either info about the downloaded data in form of JSON or the raw response if it is not JSON.
       */
-      async function uploadOutput(parameter_override_json, uuid_to_project_id_map, global_variable_snapshot, job_start_time, log_file_path) {
+      async function uploadOutput(uuid_to_project_id_map, global_variable_snapshot, job_start_time, log_file_path) {
         manually_write_to_log_window('Uploading results to OMERO...\n')
         const results = [];
-        for (const key in parameter_override_json){
-          if (key.includes("file-path")){
-            // Get variables to create the dataset that will contain the results from the export node
-            const folder_uuid = key.split('/')[0];  // Folder name of the output corresponding to the UI element where the user selects output project
-            const path_to_output_folder = `${global_variable_snapshot.temp_output}/${folder_uuid}`;  // Actual filesystem path where output is put by jipipe via export nodes
-            const dataset_name = document.getElementById(`${folder_uuid}/dataset-name`).value !== "" ? document.getElementById(`${folder_uuid}/dataset-name`).value : `${document.getElementById(`${folder_uuid}/dataset-name`).placeholder}@${job_start_time}`;  // Custom name for the dataset that will be created
-            const project_id = uuid_to_project_id_map[folder_uuid]  // Target project in which the dataset will be created
 
-            // CALL UPLOAD API POST FUNCTION WITH THESE PARAMETERS (FIRST CREATE THE DATASET IF MISSING THEN UPLOAD)
-            const res = await fetch('/JIPipeRunner/upload_output/', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {
-              'Content-Type': 'application/json',
-              'X-CSRFToken': csrftoken,
-              'Accept': 'application/json'
-            },
-            body: JSON.stringify({ path: path_to_output_folder, 
-                                   project_id: project_id, 
-                                   dataset_name: dataset_name, 
-                                   recursive: false, 
-                                   log_file_path: log_file_path
-                                  })
-            });
+        // Get subdirectories from temp_output folder
+        const res = await fetch('/JIPipeRunner/get_temp_output_subdirectories/', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRFToken': csrftoken,
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ temp_output: global_variable_snapshot.temp_output})
+        });
 
-            const contentType = res.headers.get('content-type') || '';
-            const raw = await res.text();
-            let data = null;
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Failed to list subdirectories');
 
-            if (contentType.includes('application/json')) {
-              try { data = JSON.parse(raw); } catch (e) {
-                console.warn('Failed to parse JSON:', e);
-              }
-            }
-
-            if (!res.ok) {
-              console.error('upload_output failed', { status: res.status, body: raw });
-              throw new Error((data && data.error) || `HTTP ${res.status}`);
-            }
-
-            // Push one result per upload attempt
-            results.push({
-              key,
-              folder_uuid,
-              request: { path: path_to_output_folder, project_id, dataset_name },
-              response: data ?? { raw },
-              num_imported_files: data.files_imported,
-              num_attached_files: data.files_attached,
-            });
+        for (const dir of data.subdirectories) {
+          const folder_uuid = dir; // Folder name of the output corresponding to the UI element where the user selects output project
+          if (document.getElementById(`${folder_uuid}/dataset-name`) === null){
+            continue;
           }
+          const path_to_output_folder = `${global_variable_snapshot.temp_output}/${folder_uuid}`; // Actual filesystem path where output is put by jipipe via export nodes
+          const dataset_name = document.getElementById(`${folder_uuid}/dataset-name`).value !== "" ? document.getElementById(`${folder_uuid}/dataset-name`).value 
+                               : `${document.getElementById(`${folder_uuid}/dataset-name`).placeholder}@${job_start_time}`;  // Custom name for the dataset that will be created
+          const project_id = uuid_to_project_id_map[folder_uuid]  // Target project in which the dataset will be created
+
+          // CALL UPLOAD API POST FUNCTION WITH THESE PARAMETERS (FIRST CREATE THE DATASET IF MISSING THEN UPLOAD)
+          const res = await fetch('/JIPipeRunner/upload_output/', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrftoken,
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ path: path_to_output_folder, 
+                                  project_id: project_id, 
+                                  dataset_name: dataset_name, 
+                                  recursive: false, 
+                                  log_file_path: log_file_path
+                                })
+          });
+
+          const contentType = res.headers.get('content-type') || '';
+          const raw = await res.text();
+          let data = null;
+
+          if (contentType.includes('application/json')) {
+            try { data = JSON.parse(raw); } catch (e) {
+              console.warn('Failed to parse JSON:', e);
+            }
+          }
+
+          if (!res.ok) {
+            console.error('upload_output failed', { status: res.status, body: raw });
+            throw new Error((data && data.error) || `HTTP ${res.status}`);
+          }
+
+          // Push one result per upload attempt
+          results.push({
+            folder_uuid,
+            request: { path: path_to_output_folder, project_id, dataset_name },
+            response: data ?? { raw },
+            num_imported_files: data.files_imported,
+            num_attached_files: data.files_attached,
+          });
         }
         // If no keys matched, you'll get an empty array; otherwise an array of responses
         return results;
@@ -1353,6 +1534,107 @@
         if (isAtBottom) {
           logContainer.scrollTop = logContainer.scrollHeight;
         }
+        
+        if (logOutput.textContent.length > MAX_CHARS_LOG_DISPLAY){
+          logOutput.textContent = logOutput.textContent.slice(-MAX_CHARS_LOG_DISPLAY);
+        }
+      }
+      
+      /**
+       * Creates a labeled <select> element, registers its default value in the given override map,
+       * appends it to the provided container, and transforms it into a TomSelect field.
+       * This helper is used to generate dynamic I/O and parameter selection inputs.
+       *
+       * @param {HTMLElement} container - The DOM element to which the input row will be appended.
+       * @param {string} id - The unique ID of the select element (used for DOM lookup and TomSelect binding).
+       * @param {string} labelText - The text content of the label displayed above the select element.
+       * @param {Array} items - List of option objects with keys {value, name} used by TomSelect.
+       * @param {string|null} placeholder - Default value used when no option is selected.
+       * @param {Object} overrideMap - Object that stores the default and user-defined override values.
+       * @param {string} overrideKey - Key under which the default value is stored in the override map.
+       * @param {string} section - Section identifier used to control TomSelect rendering behavior
+       *                           (e.g. "I/O" for ID → name display).
+       */
+      function addTomSelectElementToUI({container, id, labelText, items, placeholder = null, overrideMap, overrideKey = id, section = "I/O",}){
+        // Create entry to override map (initial value is irrelevant as it gets changed later on)
+        overrideMap[overrideKey] = placeholder;
+
+        // Create row for the DOM
+        const row = document.createElement("div");
+        row.className = "input-row";
+
+        // Create select element
+        const selector = document.createElement("select");
+        selector.id = id;
+        selector.multiple = true;
+        selector.placeholder = placeholder;
+
+        // Create a label for select element
+        const label = document.createElement("label");
+        label.htmlFor = id;
+        label.textContent = labelText;
+
+        // Add everything to row element and append to DOM
+        row.appendChild(label);
+        row.appendChild(selector);
+        container.appendChild(row);
+
+        // Transform the select element to be a TomSelect element
+        transformSelectElementToTomSelect(
+          select_element_id = id,
+          option_items = items,
+          placeholder_value = placeholder,
+          section = section
+        );
+        return { row, selector };
+      }
+      
+      /**
+       * Adds a text input with a label to the given row element.
+       * 
+       * @param {HTMLElement} row - The row DOM element the input field should be added to.
+       * @param {string} id - The unique ID to be given to the text input element.
+       * @param {string} labelText - The text that should be displayed in the label for the input element.
+       * @param {string|null} placeholder - A value that should be used as a placeholder in the input element.
+      **/
+      function addTextInputToRow({row, id, labelText, placeholder = "",}){
+
+        // Create the input element
+        const input = document.createElement("input");
+        input.type = "text";
+        input.id = id;
+        input.placeholder = placeholder;
+
+        // Create the label for the input element
+        const label = document.createElement("label");
+        label.htmlFor = id;
+        label.textContent = labelText;
+
+        // Add elements to the row element
+        row.appendChild(label);
+        row.appendChild(input);
+
+        return { input };
+      }
+
+      /**
+       * Gets the input value given by the user in a specified DOM element by ID. Will throw an error when no input is given!
+       * @param {string} domID - ID of the DOM element to retrieve the value from.
+       * @return {dict} - Returns a dictionary with the exists entry telling wether the DOM element for the given ID. If it does, also provides the stored value as inputValue.
+      **/
+      function getInputValueOrThrow(domID) {
+        const el = document.getElementById(domID);
+        if (!el) return { exists: false, inputValue: null };
+
+        let value;
+        if (el.tagName === "SELECT" && el.multiple) {
+          const arr = Array.from(el.selectedOptions).map(o => o.value);
+          value = arr.length ? arr.join(", ") : el.placeholder;
+          if (!value) throw new Error("Empty input fields must be filled!");
+        } else {
+          value = el.value !== "" ? el.value : el.placeholder;
+        }
+        return { exists: true, inputValue: value };
       }
       
       // =============== Initialization: fetch config and render UI =====================
@@ -1367,13 +1649,14 @@
         document.getElementById('JIPSelector').addEventListener('change', async (event) => {
 
             // Get the selected .jip file ID to get its content
-            const selectedJipFileID = event.target.value;
+            selectedJipFileID = event.target.value;
 
             // Update the global variable for the selected JIP file name
             jip_file_name = event.target.options[event.target.selectedIndex].text;
 
-            // Reset the global parameter override to be refilled
+            // Reset the global parameter and user directory override to be refilled
             jip_file_parameter_overrides = {};
+            jip_file_user_directory_overrides = {}
             
             // Declare and initialize variables for used DOM elements
             const infoSection = document.getElementById('jipipe_info_input_sections');
@@ -1400,11 +1683,11 @@
 
                 // Read the node graph from the .jip file and use it to dynamically fill the UI
                 const nodesMap = jip_file_content.graph.nodes;
-                const graphEdges = jip_file_content.graph.edges;
+                const userDirectories = jip_file_content?.metadata?.["user-directories"]?.["user-directories"]?.items ?? [];
                 const {inputCount, outputCount } = displayNodeSummary(nodesMap, tempFileInfo);
-                await createDatasetInputFields(nodesMap, tempInput);
+                await createDatasetInputFields(nodesMap, userDirectories, tempInput);
                 createParameterFields(jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters'], nodesMap, tempParams);
-                await createOutputProjectInputFields(nodesMap, graphEdges, tempOutput);
+                await createOutputProjectInputFields(nodesMap, userDirectories, tempOutput);
 
                 // Start button only enabled if the .jip file has at least one input and one output node
                 if (inputCount > 0 && outputCount > 0){  
@@ -1423,14 +1706,6 @@
               infoSection.innerHTML = originalInfoState;
               infoSection.style.display = "none";
             }
-
-            // Set output display according to "Enable output config" checkbox
-            if (document.getElementById("enableOutputConfig").checked){
-              document.getElementById("output").style.display = "block"
-            }
-            else{
-              document.getElementById("output").style.display = "none"
-            }
           });
         
         // EventListener: On change of the "Enable output config" checkbox, show or hide the output section accordingly
@@ -1445,7 +1720,7 @@
 
         // EventListener: On click of the start button, execute the pipeline job
         document.getElementById('startRunnerBtn').addEventListener('click', async (event) => {
-
+          console.time();
           // Short button disable so it can't be clicked twice in a row
           const startRunnerBtn= document.getElementById('startRunnerBtn');
           startRunnerBtn.disabled = true;
@@ -1462,7 +1737,7 @@
           try{
             event.preventDefault();
 
-            // Create directories in filsystem to handle I/O of JIPipe
+            // Create directories in filesystem to handle I/O of JIPipe
             await create_temp_directories();
             
             // Take a snapshot of global variables for this run (needs to be done to prevent override when switching .jip file or starting new run in GUI)
@@ -1472,17 +1747,18 @@
               jip_file_major_version,
               temp_input,
               temp_output,
+              selectedJipFileID
             };
 
             // Create the parameter override containing user input to be provided to JIPipe
-            let { job_parameter_override, uuid_to_project_id_map } = await createJobPipelineParametersOverride(global_variable_snapshot);
+            let { job_parameter_override, job_user_directory_override, uuid_to_project_id_map } = await createJobPipelineOverride(global_variable_snapshot);
 
             // Execute JIPipe and facilitate the log window livestream
-            const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, global_variable_snapshot);
+            const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot);
             loadRunningJobs();
 
             // Upload the output (and the logfile, even when no output is generated)
-            const output_infos = await uploadOutput(job_parameter_override, uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
+            const output_infos = await uploadOutput(uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
 
             // Output the number of uploaded files to the log window
             let num_imported_files = 0;
@@ -1516,6 +1792,7 @@
                 }
               }
               manually_write_to_log_window('JIPipeRunner finished!\n');
+              console.timeEnd();
             }
         });                       
       }

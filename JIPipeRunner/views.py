@@ -13,6 +13,9 @@ import io
 import shutil
 import mimetypes
 from pathlib import Path
+import zipfile
+import io
+from io import BytesIO
 
 from JIPipePlugin import settings
 from django.core.cache import cache
@@ -79,19 +82,64 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         json_request = json.loads(request.body.decode('utf-8'))
         jipipe_json = json_request.get('jip_content')
         parameter_override_json = json_request.get('jip_parameter_overrides', {})
+        user_directory_override_json = json_request.get('jip_user_directory_overrides', {})
         jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
         custom_output_config_enabled = json_request.get('custom_output_config_enabled', False)
         major_version = json_request.get('major_version')
         temp_input = json_request.get('input_path')
         temp_output = json_request.get('output_path')
+        jip_file_id = json_request.get('jip_file_id')
+
+        if jip_file_name.endswith(".zip"):
+            # Get the .zip file from OMERO using the provided file ID
+            jip_file = conn.getObject("originalfile", jip_file_id)
+            if jip_file is None:
+                raise FileNotFoundError(f"ZIP file with ID {jip_file_id} not found.")
+
+            raw_bytes = b"".join(jip_file.getFileInChunks())
+
+            # Optional: store the zip for debugging/reproducibility
+            zip_path = os.path.join(temp_input, jip_file_name)
+            with open(zip_path, "wb") as f:
+                f.write(raw_bytes)
+
+            # Extract everything into temp_input/<zip_root_contents...>
+            with zipfile.ZipFile(BytesIO(raw_bytes)) as zf:
+                for member in zf.infolist():
+                    member_path = member.filename.replace("\\", "/")
+
+                    # Skip weird entries (empty or root)
+                    if not member_path or member_path.endswith("/") and member_path.strip("/") == "":
+                        continue
+
+                    # Final path under temp_input
+                    out_path = os.path.join(temp_input, member_path)
+
+                    # Zip-slip protection: ensure extraction stays within temp_input
+                    norm_root = os.path.abspath(temp_input)
+                    norm_out = os.path.abspath(out_path)
+                    if not (norm_out == norm_root or norm_out.startswith(norm_root + os.sep)):
+                        raise ValueError(f"Unsafe path in zip entry: {member.filename}")
+
+                    # Directory entry
+                    if member.is_dir():
+                        os.makedirs(out_path, exist_ok=True)
+                        continue
+
+                    # File entry
+                    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+                    with zf.open(member) as src, open(out_path, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
 
         # TODO: Validate the JIPipe JSON structure here for security and correctness
 
         if not custom_output_config_enabled:
             # Ensure there is a JIPipeResults project to store outputs
-            results_project = _get_or_create_results_project(conn)
-            results_project_id = int(results_project.getId())
-
+            try:
+                results_project = _get_or_create_results_project(conn)
+                results_project_id = int(results_project.getId())
+            except:
+                return results_project
             # Assign dataset IDs of target output dataset to the define-project-ids nodes to save outputs to
             for node in jipipe_json.get('graph', {}).get('nodes', {}).values():
                 node_alias_id = node.get('jipipe:alias-id', '').lower()
@@ -106,7 +154,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
         run_jipipe_ephemeral.apply_async(
-            args=[jipipe_json, parameter_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output],
+            args=[jipipe_json, parameter_override_json, user_directory_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output],
             task_id=job_uuid,
             ignore_result=True,
         )
@@ -293,13 +341,37 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
         jip_file = conn.getObject('originalfile', jip_file_id)
 
         # If the file does not exist, return a 404 error
-        if jip_file is None or not jip_file.getName().endswith('.jip'):
+        if jip_file is None:
             raise FileNotFoundError(f".jip file with ID {jip_file_id} not found.")
         
-        # Read and parse the JSON data from the annotation
+        # Read and parse the JSON data from the annotation (file is either .jip or .zip for RO-Crates)
         raw_bytes = b''.join(jip_file.getFileInChunks())
-        config_text = raw_bytes.decode('utf-8')
-        config_data = json.loads(config_text)
+        if jip_file.getName().endswith('.jip'):
+            config_text = raw_bytes.decode('utf-8')
+            config_data = json.loads(config_text)
+        elif jip_file.getName().endswith('.zip'):
+            # Open the zip file in memory using a BytesIO object
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zip_ref:
+                # List files inside the zip to find the .jip file
+                zip_contents = zip_ref.namelist()
+                json_filename = None
+                
+                # Find the first .jip file (assuming only one exists)
+                for file in zip_contents:
+                    if file.endswith('.jip'):
+                        json_filename = file
+                        break
+                
+                if json_filename is None:
+                    raise FileNotFoundError("No .jip file found inside the zip archive.")
+                
+                # Extract the JSON file content
+                with zip_ref.open(json_filename) as json_file:
+                    config_text = json_file.read().decode('utf-8')
+                    config_data = json.loads(config_text)
+        else:
+            raise TypeError("Selected file is neither .jip nor .zip and is therefore not supported!")
+
     
     except FileNotFoundError as e:
         logger.error(str(e), exc_info=1)
@@ -308,6 +380,10 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
     except json.JSONDecodeError as parse_error:
         logger.error('Failed to parse JIPipe JSON: %s', parse_error)
         return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=400)
+    
+    except TypeError as e:
+        logger.error(str(e), exc_info=1)
+        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=422)
 
     return JsonResponse(config_data, safe=False)
 
@@ -353,7 +429,7 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
 
                 # The FileAnnotation wrapper has a .getFile() method returning a FileI
                 file_name = file_annotation.getFile().getName()
-                if file_name.endswith(".jip"):
+                if file_name.endswith(".jip") or file_name.endswith(".zip"):
                     all_jip_annotations.append({
                         'file_id': file_id,
                         'file_name': file_name
@@ -489,7 +565,7 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
 # Helper: ensure the results project exists
 def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
     """
-    Ensure that a project named 'JIPipeResults' exists on the 
+    Ensure that a project named 'JIPipeResultsDefault' exists on the 
     OMERO server and in the current group of the active user.
     If it does not exist, create it with a description.
     Returns the Project object if it exists or was created successfully.
@@ -498,16 +574,12 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
         # Define the project name to look for or create
         DEFAULT_PROJECT_NAME = "JipipeResultsDefault"
 
-        # Set a group to save
-        original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
-        user_id = conn.getUserId()
-        user_groups = list(conn.getOtherGroups(user_id))
-        conn.SERVICE_OPTS.setOmeroGroup(user_groups[0].id)
-
         # Attempt to find an existing project
-        existing_results_project = conn.getObject('Project', attributes={'name': DEFAULT_PROJECT_NAME})
-        if existing_results_project:
-            return existing_results_project
+        existing_results_projects = list(conn.getObjects('Project', attributes={'name': DEFAULT_PROJECT_NAME}))
+        if existing_results_projects:
+            if len(existing_results_projects) > 1:
+                logger.warning("Found %d Projects named '%s' in group %s. Using the first (id=%s).", len(existing_results_projects), DEFAULT_PROJECT_NAME, conn.SERVICE_OPTS.getOmeroGroup(), existing_results_projects[0].getId())
+            return existing_results_projects[0]
 
         # Create a new Project with the specified name if it does not exist
         new_project_model = omero.model.ProjectI()
@@ -528,8 +600,6 @@ def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
             {'error': f'Internal server error creating default project to save data to: {e}'},
             status=500
         )
-    finally:
-        conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
 
 
 def create_temp_directories(request) -> JsonResponse:
@@ -571,30 +641,155 @@ def create_temp_subdirectories(request) -> JsonResponse:
 @require_POST
 @csrf_protect
 def remove_temp_directories(request):
+    """
+    Delete temp directories, but ONLY if they are within JIPIPE_TEMP_DIR.
+
+    Expects JSON body: { "temp_directories": ["<path1>", "<path2>", ...] }
+
+    Security:
+    - only allows directories within JIPIPE_TEMP_DIR
+    - refuses deleting JIPIPE_TEMP_DIR itself
+    """
     try:
-        payload = json.loads(request.body.decode("utf-8"))
+        try:
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            return JsonResponse({"error": "Invalid JSON payload"}, status=400)
+
         dirs = payload.get("temp_directories", [])
         if not isinstance(dirs, list):
-            return JsonResponse({"error": "temp_directories must be a list"})
-    except Exception:
-        return JsonResponse({"error": "Invalid JSON payload"})
+            return JsonResponse({"error": "temp_directories must be a list"}, status=400)
 
-    deleted, skipped, errors = [], [], []
+        allowed_base = Path(JIPIPE_TEMP_DIR).resolve()
+        if not allowed_base.exists() or not allowed_base.is_dir():
+            return JsonResponse(
+                {"error": "Server misconfiguration: JIPIPE_TEMP_DIR invalid"},
+                status=400,
+            )
 
-    for raw in dirs:
+        deleted, skipped, errors = [], [], []
+
+        for raw in dirs:
+            try:
+                if raw is None or str(raw).strip() == "":
+                    skipped.append({"path": raw, "reason": "empty path"})
+                    continue
+
+                requested = Path(str(raw))
+
+                # If relative, interpret relative to allowed base
+                if not requested.is_absolute():
+                    requested = allowed_base / requested
+
+                # Resolve to collapse '..' and symlinks
+                requested = requested.resolve()
+
+                # Ensure requested path is inside allowed_base
+                try:
+                    is_allowed = requested.is_relative_to(allowed_base)
+                except AttributeError:
+                    # Python < 3.9 fallback
+                    is_allowed = (
+                        str(requested).startswith(str(allowed_base) + os.sep)
+                        or requested == allowed_base
+                    )
+
+                if not is_allowed:
+                    skipped.append({"path": raw, "reason": "path not allowed"})
+                    continue
+
+                # Refuse deleting the base temp dir itself
+                if requested == allowed_base:
+                    skipped.append({"path": raw, "reason": "refusing to delete base temp dir"})
+                    continue
+
+                if requested.is_dir():
+                    shutil.rmtree(str(requested))
+                    deleted.append(str(requested))
+                else:
+                    skipped.append({"path": raw, "reason": "not a directory"})
+
+            except Exception as e:
+                logger.exception("Failed deleting temp directory %r", raw)
+                errors.append({"path": raw, "error": str(e)})
+
+        status = 207 if errors else 200
+        return JsonResponse(
+            {"deleted": deleted, "skipped": skipped, "errors": errors},
+            status=status,
+        )
+
+    except Exception as e:
+        logger.exception("remove_temp_directories unexpected failure: %s", e)
+        return JsonResponse({"error": f"Unexpected error: {e}"}, status=400)
+
+@require_POST
+@login_required()
+def get_temp_output_subdirectories(request, conn=None, **kwargs) -> JsonResponse:
+    """
+    Return immediate subdirectories of a given temp_output directory.
+
+    Expects JSON body: { "temp_output": "<path>" }
+
+    Security:
+    - user must be logged in
+    - only allows paths within JIPIPE_TEMP_DIR
+    - lists only immediate subdirectories (no recursion)
+
+    URL: JIPipeRunner/get_temp_output_subdirectories/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional)
+    """
+    try:
+        # Parse JSON body
         try:
-            path = os.path.abspath(str(raw))
+            payload = json.loads(request.body.decode("utf-8") or "{}")
+        except Exception:
+            return JsonResponse({"error": "Invalid JSON body"}, status=400)
 
-            if os.path.isdir(path):
-                shutil.rmtree(path)
-                deleted.append(path)
-            else:
-                skipped.append({"path": raw, "reason": "not a directory"})
-        except Exception as e:
-            errors.append({"path": raw, "error": str(e)})
+        raw_path = payload.get("temp_output", "")
+        if not raw_path:
+            return JsonResponse({"error": "Missing required field: temp_output"}, status=400)
 
-    status = 207 if errors else 200
-    return JsonResponse({"deleted": deleted, "skipped": skipped, "errors": errors}, status=status)
+        allowed_base = Path(JIPIPE_TEMP_DIR).resolve()
+        if not allowed_base.exists() or not allowed_base.is_dir():
+            return JsonResponse({"error": "Server misconfiguration: JIPIPE_TEMP_DIR invalid"}, status=400)
+
+        requested = Path(raw_path)
+
+        # If temp_output is relative, interpret relative to allowed base
+        if not requested.is_absolute():
+            requested = allowed_base / requested
+
+        # Resolve to remove '..' etc.
+        requested = requested.resolve()
+
+        # Ensure requested path is inside allowed_base
+        try:
+            is_allowed = requested.is_relative_to(allowed_base)
+        except AttributeError:
+            # Python < 3.9 fallback
+            is_allowed = str(requested).startswith(str(allowed_base) + os.sep) or requested == allowed_base
+
+        if not is_allowed:
+            return JsonResponse({"error": "Path not allowed"}, status=403)
+
+        if not requested.exists() or not requested.is_dir():
+            return JsonResponse({"error": "Temp output directory not found"}, status=400)
+
+        # List immediate subdirectories
+        subdirs = []
+        for name in os.listdir(str(requested)):
+            full_path = requested / name
+            if full_path.is_dir():
+                subdirs.append(name)
+
+        subdirs.sort()
+        return JsonResponse({"subdirectories": subdirs})
+
+    except Exception as error:
+        logger.exception("Failed to list temp output subdirectories: %s", error)
+        return JsonResponse({"error": f"Error retrieving temp output subdirectories: {error}"}, status=400)
 
 @require_POST
 @login_required()
@@ -826,12 +1021,33 @@ def upload_output(request, conn=None, **kwargs):
         # Gather candidate files
         candidates = _gather_files(root_dir, recursive=recursive, patterns=patterns)
         if not candidates:
-            return JsonResponse({"error": "No matching files to import."}, status=400)
+            # Still return success (no error)
+            return JsonResponse({
+                "ok": True,
+                "nothing_to_upload": True,
+                "message": "No matching files found; nothing uploaded.",
+                "project_id": project_id,
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_name,
+                "root_dir": root_dir,
+                "recursive": recursive,
+                "patterns": patterns,
+                "files_considered": 0,
+                "files_imported": 0,
+                "files_attached": len(attached),   # log attachment count if any
+                "files_skipped": 0,
+                "results": attached,               # include log attachment results if you made them
+                "errors": [],
+                "stdout": "",
+                "stderr": "",
+            }, status=200)
         
         # Decide what we consider importable image files
         IMAGE_EXTS = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".dv", ".czi", ".nd2", ".lif", ".ics", ".ids", ".svs", ".mrxs"}
         files_for_import = [p for p in candidates if os.path.splitext(p)[1].lower() in IMAGE_EXTS]
         files_for_attach = [p for p in candidates if p not in files_for_import]
+
+        results, errors = [], []
 
         if files_for_attach:
             for apath in files_for_attach:
@@ -873,7 +1089,6 @@ def upload_output(request, conn=None, **kwargs):
                 except Exception as e:
                     errors.append({"file": apath, "error": f"attach failed: {e}"})
 
-        results, errors = [], []
         imported = 0
 
         if files_for_import:
