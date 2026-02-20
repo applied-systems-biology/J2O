@@ -585,10 +585,10 @@
       async function listAvailableJIPFiles() {
 
         // Get selector element to add options to
-        const selector = document.getElementById('JIPSelector');
+        const select_element = document.getElementById('JIPSelector');
 
         // If it doesn't exist yet, skip
-        if (selector === null) {
+        if (select_element === null) {
           return;
         }
 
@@ -599,7 +599,7 @@
           if (!response.ok) {
             const errorJSON = await response.json();
             console.error(`Failed to fetch .jip files: ${errorJSON.error}\n${errorJSON.trace}`);
-            selector.parentElement.innerHTML = `<p style="color:red;">Failed to fetch .jip files: ${errorJSON.error}</p>`
+            select_element.parentElement.innerHTML = `<p style="color:red;">Failed to fetch .jip files: ${errorJSON.error}</p>`
             return;
           }
 
@@ -609,7 +609,7 @@
               const option = document.createElement('option');
               option.value = file.file_id;
               option.textContent = file.file_name;
-              selector.appendChild(option);
+              select_element.appendChild(option);
           });
         }
       
@@ -725,7 +725,7 @@
               .find(key => nodeInfoId === key);
             if (!matchedKey) return;
 
-            const inputId = `${crypto.randomUUID()}|${uuid}/${validDatasetInput_nodeInfoID_to_referencePath_map[matchedKey]}`;
+            const inputId = `${uuid}/${validDatasetInput_nodeInfoID_to_referencePath_map[matchedKey]}`;
             const name = node["jipipe:node:name"];
 
             addTomSelectElementToUI({
@@ -773,7 +773,7 @@
               }
 
               // use UUID of the node to create a unique ID for the input field
-              const fieldId = `${crypto.randomUUID()}|${entry.path}`;
+              const fieldId = `${entry.path}`;
 
               // Construct the override JSON
               jip_file_parameter_overrides[fieldId] = defaultValue;
@@ -812,14 +812,14 @@
               if (jip_file_major_version >= 6 && TomSelectDataArchetypes.includes(refParameterArchetype)){
 
                 // Create select element to be used with TomSelect
-                const selector = document.createElement('select');
-                selector.id = fieldId;
-                selector.placeholder = defaultValue;
-                selector.multiple = false;
+                const select_element = document.createElement('select');
+                select_element.id = fieldId;
+                select_element.placeholder = defaultValue;
+                select_element.multiple = false;
 
                 // Allow multiple selection for certain parameters
                 if (AllowMultipleOptionsDataArchetypes.includes(refParameterArchetype)){
-                  selector.multiple = true;
+                  select_element.multiple = true;
                 }
 
                 // Get list of options from .jip file doc content
@@ -830,7 +830,13 @@
                   }));
 
                 // Add to input row
-                row.append(selector);
+                row.append(select_element);
+
+                // Append the row to the parameters container
+                container.appendChild(row);
+
+                // Transform <select> element to TomSelect element
+                transformSelectElementToTomSelect(element=select_element, option_items=items, placeholder_value=defaultValue, section="ref-parameter");
               }
               else {
                 // Construct the input field with a label, tooltip, and placeholder without TomSelect
@@ -839,15 +845,13 @@
                 raw_input.id = fieldId;
                 raw_input.name = entry['custom-name'];
                 raw_input.placeholder = defaultValue;
-                row.append(raw_input)
-              }
-              // Append the row to the parameters container
-              container.appendChild(row);
 
-              // Transform the select element to a TomSelect field after adding everything to DOM (no idea why it needs to happen after but it does)
-              if (jip_file_major_version >= 6 && TomSelectDataArchetypes.includes(refParameterArchetype)){
-                transformSelectElementToTomSelect(select_element_id=fieldId, option_items=items, placeholder_value=defaultValue, section="ref-parameter");
-                }
+                // Add to input row
+                row.append(raw_input)
+
+                // Append the row to the parameters container
+                container.appendChild(row);
+              }
             });
           });
         }catch(err){
@@ -894,7 +898,7 @@
             if (!key_name.includes("output")) return;
 
             // add the TomSelect element to DOM
-            const { row, selector } = addTomSelectElementToUI({
+            const { row, select_element } = addTomSelectElementToUI({
               container,
               id: key_name,
               labelText: `User directory: ${key_name}`,
@@ -906,7 +910,7 @@
             });
 
             // Only allow users to select one output Project per node
-            selector.multiple = false;
+            select_element.multiple = false;
 
             // add dataset-name input to the SAME row element in DOM
             addTextInputToRow({
@@ -923,11 +927,11 @@
             // Skip entry if current node is not an export node
             if (!node["jipipe:alias-id"]?.includes("export")) return;
 
-            // Define ID of input element to reference later (randomUUID in front because TomSelect is weird)
-            const inputId = `${crypto.randomUUID()}|${uuid}/file-path`;
+            // Define ID of input element to reference later
+            const inputId = `${uuid}/file-path`;
 
             // Add TomSelect element to DOM
-            const { row, selector } = addTomSelectElementToUI({
+            const { row, select_element } = addTomSelectElementToUI({
               container,
               id: inputId,
               labelText: node["jipipe:node:name"],
@@ -939,7 +943,7 @@
             });
 
             // Only allow users to select one output Project per node
-            selector.multiple = false;
+            select_element.multiple = false;
 
             // add dataset-name input to the SAME row element in DOM
             addTextInputToRow({
@@ -1023,7 +1027,7 @@
             const matchedValue = Object.values(validDatasetInput_nodeInfoID_to_referencePath_map).find(value => key.includes(value));
 
             // Get the folder_uuid, used to determine location to save input/output to in temp_dirs
-            const folder_uuid = key.split("|")[1].split('/')[0];
+            const folder_uuid = key.split('/')[0];
 
             // If dataset input node: create temp dirs and download OMERO data to that location and set value of parameter override to destination path
             if (matchedValue){
@@ -1049,9 +1053,9 @@
               finalValue = transformToJIPipeCompatibleValue(inputValue, key);
             }
 
-            // Overwrite the entry with the JIPipe compatible value and discard random UUID before key
+            // Overwrite the entry with the JIPipe compatible value
             delete job_parameter_override[key];
-            job_parameter_override[key.split("|")[1]] = finalValue; // Weird split needs to happen cause we need random value before key for TomSelect uniqueness
+            job_parameter_override[key] = finalValue; // Weird split needs to happen cause we need random value before key for TomSelect uniqueness
           }
 
           // Print content to console for checking correctness!
@@ -1168,8 +1172,6 @@
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       */
       async function executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot) {
-
-        console.log(`Workflow file: ${global_variable_snapshot.jip_file_content}`);
 
         // Send a request to the server to start the job
         const response = await fetch('/JIPipeRunner/jipipe_start_job/', {
@@ -1447,14 +1449,14 @@
 
       /**
        * Helper function that transform the select element with the given ID into a TomSelect element.
-       * @param {string} select_element_id - The ID of the select element to transform.
+       * @param {string} element - The select element to transform.
        * @param {map} option_items - Map that contains the value and name of the options. Those are used to display the options.
        * @param {string} placeholder_value - A placeholder value that will be displayed if nothing is selected yet. Will be used as a default value when execution starts.
        * @param {string} section - For "I/O" gives selection options as ID {data_value}: data_name. For everything else just data_value. 
       */
-      function transformSelectElementToTomSelect(select_element_id, option_items, placeholder_value, section){
+      function transformSelectElementToTomSelect(element, option_items, placeholder_value, section){
         try{
-          new TomSelect(`#${CSS.escape(select_element_id)}`, {
+          new TomSelect(element, {
             options: option_items,
             plugins: ['remove_button'],
             valueField: 'value',
@@ -1564,10 +1566,10 @@
         row.className = "input-row";
 
         // Create select element
-        const selector = document.createElement("select");
-        selector.id = id;
-        selector.multiple = true;
-        selector.placeholder = placeholder;
+        const select_element = document.createElement("select");
+        select_element.id = id;
+        select_element.multiple = true;
+        select_element.placeholder = placeholder;
 
         // Create a label for select element
         const label = document.createElement("label");
@@ -1576,17 +1578,17 @@
 
         // Add everything to row element and append to DOM
         row.appendChild(label);
-        row.appendChild(selector);
+        row.appendChild(select_element);
         container.appendChild(row);
 
         // Transform the select element to be a TomSelect element
         transformSelectElementToTomSelect(
-          select_element_id = id,
+          element = select_element,
           option_items = items,
           placeholder_value = placeholder,
           section = section
         );
-        return { row, selector };
+        return { row, select_element };
       }
       
       /**
@@ -1694,6 +1696,13 @@
                   startRunnerBtn.disabled = false;
                 }else{
                   startRunnerBtn.disabled = true;
+                }
+
+                if (document.getElementById('enableOutputConfig').checked){
+                  tempOutput.style.display = "block";
+                }
+                else{
+                  tempOutput.style.display = "none";
                 }
 
                 // Replace the visible infoSection with the content of the buffer div
