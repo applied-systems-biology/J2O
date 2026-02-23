@@ -116,14 +116,14 @@ else
     systemctl --user --machine="${OMERO_USER}@.host" enable --now podman.socket
 fi
 
-# === INSTALL JIPIPERUNNER ===
+# === INSTALL J2O ===
 echo "Installing OMERO plugin..."
 if "$OMERO_BIN_PATH/pip" show "JIPipeRunner" > /dev/null 2>&1; then
-    read -p "Plugin 'JIPipeRunner' is already installed. Do you want to reinstall it? [y/n] " REINSTALL_ANSWER
+    read -p "Plugin 'J2O' is already installed. Do you want to reinstall it? [y/n] " REINSTALL_ANSWER
 
     while [[ "$REINSTALL_ANSWER" != "n" && "$REINSTALL_ANSWER" != "y" ]]; do
         echo "Invalid answer, only y or n are accepted answers. Try again!"
-        read -p "Plugin 'JIPipeRunner' is already installed. Do you want to reinstall it? [y/n] " REINSTALL_ANSWER
+        read -p "Plugin 'J2O' is already installed. Do you want to reinstall it? [y/n] " REINSTALL_ANSWER
     done
 
     if [ "$REINSTALL_ANSWER" = "y" ]; then
@@ -136,7 +136,7 @@ fi
 # === CONFIGURE OMERO WEB ===
 echo "Configuring omero config..."
 APP_ENTRY='"JIPipeRunner"'
-PLUGIN_ENTRY='["JIPipeRunner", "JIPipeRunner/right_plugin_example.js.html", "jipipe_form_container"]'
+PLUGIN_ENTRY='["J2O", "JIPipeRunner/right_plugin_example.js.html", "jipipe_form_container"]'
 
 CURRENT_APPS=$(run_as_omero-web omero config get omero.web.apps 2>/dev/null || echo "")
 

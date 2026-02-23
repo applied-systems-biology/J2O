@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>JIPipeRunner Configuration</title>
+  <title>J2O Configuration</title>
   <style>
     :root {
       /* Color palette */
@@ -352,7 +352,7 @@
     <!-- Section: .jip file selection -->
     <section id="FileSelectorSection">
       <h2>File Selection</h2>
-      <p>Choose a .jip file to use:</p>
+      <p>Choose a workflow file to use:</p>
       <div class="input-row">
         <select id="JIPSelector" name="JIPSelector">
           <option value="">—Nothing selected—</option>
@@ -402,7 +402,7 @@
     </div>
 
     <div style="text-align: center; margin-bottom: 20px;">
-      <button id="startRunnerBtn" disabled>Start JIPipeRunner</button>
+      <button id="startRunnerBtn" disabled>Start J2O</button>
     </div>
 
     <!-- Section: Job output logs -->
@@ -416,7 +416,7 @@
 
     <!--- Licensing -->
     <div style="font-size: 0.75rem; text-align: center; margin-top: 2rem;">
-      JIPipeRunner by Marius Wank, licensed under 
+      J2O by Marius Wank, licensed under 
       <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank">CC BY 4.0</a>.<br>
       Requires <a href="https://jipipe.hki-jena.de/" target="_blank">JIPipe</a> by Ruman Gerst and Zoltán Csereynes.<br>
       Powered by <a href="https://tom-select.js.org/" target="_blank">Tom Select</a> licensed under Apache 2.0.
@@ -1736,12 +1736,12 @@
           startRunnerBtn.textContent = "Starting...";
           setTimeout(() => {
             startRunnerBtn.disabled = false;
-            startRunnerBtn.textContent = "Start JIPipeRunner";
+            startRunnerBtn.textContent = "Start J2O";
           }, 1000);
 
           // Define a snapshot variable to save current global variables and announce start to the user
           let global_variable_snapshot = null;
-          manually_write_to_log_window('Starting JIPipeRunner...\n');
+          manually_write_to_log_window('Starting J2O...\n');
 
           try{
             event.preventDefault();
@@ -1800,7 +1800,7 @@
                   manually_write_to_log_window(`Cleanup error: ${e.message}\n`);
                 }
               }
-              manually_write_to_log_window('JIPipeRunner finished!\n');
+              manually_write_to_log_window('J2O finished!\n');
               console.timeEnd();
             }
         });                       
