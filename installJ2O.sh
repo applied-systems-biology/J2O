@@ -118,7 +118,7 @@ fi
 
 # === INSTALL J2O ===
 echo "Installing OMERO plugin..."
-if "$OMERO_BIN_PATH/pip" show "JIPipeRunner" > /dev/null 2>&1; then
+if "$OMERO_BIN_PATH/pip" show "J2O" > /dev/null 2>&1; then
     read -p "Plugin 'J2O' is already installed. Do you want to reinstall it? [y/n] " REINSTALL_ANSWER
 
     while [[ "$REINSTALL_ANSWER" != "n" && "$REINSTALL_ANSWER" != "y" ]]; do
@@ -135,8 +135,8 @@ fi
 
 # === CONFIGURE OMERO WEB ===
 echo "Configuring omero config..."
-APP_ENTRY='"JIPipeRunner"'
-PLUGIN_ENTRY='["J2O", "JIPipeRunner/right_plugin_example.js.html", "jipipe_form_container"]'
+APP_ENTRY='"J2O"'
+PLUGIN_ENTRY='["J2O", "J2O/right_plugin_example.js.html", "jipipe_form_container"]'
 
 CURRENT_APPS=$(run_as_omero-web omero config get omero.web.apps 2>/dev/null || echo "")
 
@@ -220,10 +220,27 @@ fi
 echo "Checking if Celery worker is running for app JIPipePlugin..."
 
 if pgrep -f "celery.*-A JIPipePlugin.*worker" > /dev/null; then
-    echo "Celery worker already running."
+    echo "Celery worker is already running."
+    read -p "Do you want to restart the Celery worker to apply changes? [y/n] " CELERY_RESTART_ANSWER
+    while [[ "$CELERY_RESTART_ANSWER" != "n" && "$CELERY_RESTART_ANSWER" != "y" ]]; do
+        echo "Invalid answer, only y or n are accepted answers. Try again!"
+        read -p "Do you want to restart the Celery worker to apply changes? [y/n] " CELERY_RESTART_ANSWER
+    done
+    
+    if [ "$CELERY_RESTART_ANSWER" = "y" ]; then
+        echo "Stopping Celery worker..."
+        pkill -f "celery.*-A JIPipePlugin.*worker" || true
+        sleep 2
+        
+        echo "Starting Celery worker..."
+        run_as_omero-web celery -A JIPipePlugin worker --loglevel=info -E --detach
+        echo "Celery worker restarted."
+    else
+        echo "Keeping existing Celery worker running."
+    fi
 else
-    echo "Starting Celery worker for JIPipePlugin..."
-
+    echo "No Celery worker found. Starting one..."
+    
     # Start celery as background job using nohup
     (run_as_omero-web celery -A JIPipePlugin worker --loglevel=info -E --detach> /dev/null 2>&1) &
 

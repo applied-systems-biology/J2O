@@ -1,1 +1,1 @@
-recursive-include JIPipeRunner/templates *
+recursive-include J2O/templates *

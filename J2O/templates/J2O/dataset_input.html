@@ -39,7 +39,7 @@
       flex: 1 1 auto;
     }
 
-    #jipipe_runner_container {
+    #j2o_container {
       display: flex;
       flex-direction: column;
       height: 100%;
@@ -348,7 +348,7 @@
   </style>
 </head>
 <body>
-  <div id="jipipe_runner_container">
+  <div id="j2o_container">
     <!-- Section: .jip file selection -->
     <section id="FileSelectorSection">
       <h2>File Selection</h2>
@@ -472,7 +472,7 @@
         }
 
         // Fetch the list of running jobs from the server to add them to the job list
-        const resp = await fetch('/JIPipeRunner/list_jipipe_jobs/', {
+        const resp = await fetch('/J2O/list_jipipe_jobs/', {
           credentials: 'same-origin'
         });
         if (!resp.ok) {
@@ -553,7 +553,7 @@
 
         try {
           // Send a POST request to stop the job with the given jobId
-          const resp = await fetch('/JIPipeRunner/stop_jipipe_job/', {
+          const resp = await fetch('/J2O/stop_jipipe_job/', {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrftoken },
             body: JSON.stringify({ job_id: jobId })
@@ -593,7 +593,7 @@
         }
 
         // Request the list of available JIP files to the user from the server
-          const response = await fetch('/JIPipeRunner/list_jipipe_files/', { credentials: 'same-origin' });
+          const response = await fetch('/J2O/list_jipipe_files/', { credentials: 'same-origin' });
 
           // If the response is not OK, throw an error with the status code
           if (!response.ok) {
@@ -621,7 +621,7 @@
        */
       async function fetchPipelineConfig(jip_file_id) {
         // Fetch the .jip file content from the server using the provided JIP file ID
-        const response = await fetch(`/JIPipeRunner/get_jipipe_config/${jip_file_id}/`);
+        const response = await fetch(`/J2O/get_jipipe_config/${jip_file_id}/`);
 
         // Save response JSON
         const responseJSON = await response.json();
@@ -673,7 +673,7 @@
       async function createDatasetInputFields(nodesMap, userDirectories, container) {
         try{
           // Request all available datasets that can be used as input from the server
-          const response = await fetch('/JIPipeRunner/list_available_datasets/', { credentials: 'same-origin' });
+          const response = await fetch('/J2O/list_available_datasets/', { credentials: 'same-origin' });
 
           if (!response.ok) {
               const errorJSON = await response.json();
@@ -869,7 +869,7 @@
       async function createOutputProjectInputFields(nodesMap, userDirectories, container) {
         try{
           // Request all available projects that can be used as input from the server
-          const response = await fetch('/JIPipeRunner/list_available_projects/', { credentials: 'same-origin' });
+          const response = await fetch('/J2O/list_available_projects/', { credentials: 'same-origin' });
 
           if (!response.ok) {
                 const errorJSON = await response.json();
@@ -969,7 +969,7 @@
       async function create_temp_directories(){
         // Create temp directories
         manually_write_to_log_window('Initializing filesystem, please wait...\n');
-        const response = await fetch('/JIPipeRunner/create_temp_directories/', {credentials: 'same-origin'});
+        const response = await fetch('/J2O/create_temp_directories/', {credentials: 'same-origin'});
 
         let data;
         try {
@@ -1114,7 +1114,7 @@
        * @param {string} node_uuid - The uuid of the JIPipe node. Used to create a uniquely named folder for each node.
       **/
       async function create_temp_subdirectories(path, node_uuid){
-        await fetch('/JIPipeRunner/create_temp_subdirectories/', {
+        await fetch('/J2O/create_temp_subdirectories/', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -1135,7 +1135,7 @@
        * @returns {dict} - Returns either info about the downloaded data in form of JSON or the raw response if it is not JSON.
       */
       async function downloadInput(destination_path, dataset_ID) {
-        const res = await fetch('/JIPipeRunner/download_input/', {
+        const res = await fetch('/J2O/download_input/', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -1174,7 +1174,7 @@
       async function executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot) {
 
         // Send a request to the server to start the job
-        const response = await fetch('/JIPipeRunner/jipipe_start_job/', {
+        const response = await fetch('/J2O/jipipe_start_job/', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -1247,7 +1247,7 @@
 
           // Fetch the latest job info
           const fetchLatestJob = async () => {
-              const resp = await fetch('/JIPipeRunner/get_latest_jipipe_job/', { credentials: 'same-origin' });
+              const resp = await fetch('/J2O/get_latest_jipipe_job/', { credentials: 'same-origin' });
               if (!resp.ok) {
                   const errorJSON = await resp.json();
                   console.error(`Error ${resp.status}: ${errorJSON.error}\n${errorJSON.trace}`);
@@ -1259,7 +1259,7 @@
 
           // Fetch logs for a specific job
           const fetchLogs = async (jobId) => {
-              const logResp = await fetch(`/JIPipeRunner/fetch_jipipe_logs/${jobId}/`, { credentials: 'same-origin' });
+              const logResp = await fetch(`/J2O/fetch_jipipe_logs/${jobId}/`, { credentials: 'same-origin' });
 
               // Retry if logs are not ready
               if (!logResp.ok || logResp.status === 204) {
@@ -1290,9 +1290,14 @@
 
                   // Fetch logs for the current job
                   const logData = await fetchLogs(jobId);
-                  if (!logData) continue; // Retry if logs unavailable
+                  if (!logData) throw ReferenceError("Log file was not found. Check that your admin selected a writable directory for logs!");
 
                   ({ status, logs } = logData);
+                  // Skip writing till something has been written to the log
+                  if (logs === null){
+                    await sleep(latest_job_id !== jobId ? 5000 : 1000);
+                    continue;
+                  } 
 
                   // Update log output if new logs appeared
                   if (logs.length > previousLogLength && latest_job_id === jobId) {
@@ -1308,10 +1313,11 @@
                   await sleep(latest_job_id !== jobId ? 5000 : 1000);
               }
           } catch (err) {
-              console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream!`);
+              console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream & task!`);
               if (latest_job_id === jobId) {
-                  manually_write_to_log_window(`${err.name} while trying to update log window: ${err.message}\nAborting log stream!`);
+                  manually_write_to_log_window(`${err.name} while trying to update log window: ${err.message}\nAborting log stream & task!\n`);
               }
+              stopPipelineJob(jobId);
           } finally {
               // Final log message
               if (latest_job_id === jobId) {
@@ -1335,7 +1341,7 @@
         const results = [];
 
         // Get subdirectories from temp_output folder
-        const res = await fetch('/JIPipeRunner/get_temp_output_subdirectories/', {
+        const res = await fetch('/J2O/get_temp_output_subdirectories/', {
         method: 'POST',
         credentials: 'same-origin',
         headers: {
@@ -1360,7 +1366,7 @@
           const project_id = uuid_to_project_id_map[folder_uuid]  // Target project in which the dataset will be created
 
           // CALL UPLOAD API POST FUNCTION WITH THESE PARAMETERS (FIRST CREATE THE DATASET IF MISSING THEN UPLOAD)
-          const res = await fetch('/JIPipeRunner/upload_output/', {
+          const res = await fetch('/J2O/upload_output/', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -1409,7 +1415,7 @@
        * @param {list} list_of_temp_directories - A list of directories that should be removed.
       */
       async function remove_temp_directories(list_of_temp_directories) {
-        const response = await fetch('/JIPipeRunner/remove_temp_directories/', {
+        const response = await fetch('/J2O/remove_temp_directories/', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -1800,14 +1806,14 @@
                   manually_write_to_log_window(`Cleanup error: ${e.message}\n`);
                 }
               }
-              manually_write_to_log_window('J2O finished!\n');
+              manually_write_to_log_window('J2O finished!\n\n');
               console.timeEnd();
             }
         });                       
       }
       // Catch any errors that occur during the initialization and display an error message in the container
       catch (error) {
-        const container = document.getElementById('jipipe_runner_container');
+        const container = document.getElementById('j2o_container');
         container.innerHTML = `<p class="error">Error loading configuration: ${error.message}</p>`;
         console.error(error);
         loadRunningJobs()

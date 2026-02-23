@@ -14,7 +14,7 @@ app = Celery(
     "JIPipePlugin",
     broker=cache_location,
     backend=cache_location,
-    include=["JIPipeRunner.tasks"]
+    include=["J2O.tasks"]
 )
 # run on omero-web: celery -A JIPipePlugin worker --loglevel=info -E
 

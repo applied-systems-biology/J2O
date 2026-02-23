@@ -25,7 +25,7 @@ from django.views.decorators.http import require_GET, require_POST
 from django.views.decorators.csrf import csrf_protect
 
 from JIPipePlugin.celery import app
-from JIPipeRunner.tasks import run_jipipe_ephemeral
+from J2O.tasks import run_jipipe_ephemeral
 from celery.result import AsyncResult
 
 import omero
@@ -37,8 +37,8 @@ import omero.model as omodel
 from omero.model import ProjectI
 
 # Directory where JIPipe files are stored (customizable via Django settings)
-LOG_DIR = settings.JIPIPERUNNER_LOG_DIR
-JIPIPE_TEMP_DIR = settings.JIPIPERUNNER_TEMP_DIR
+LOG_DIR = settings.J2O_LOG_DIR
+JIPIPE_TEMP_DIR = settings.J2O_TEMP_DIR
 
 # Time (in seconds) to keep PIDs in cache before expiring (None == never expire)
 CACHE_TIMEOUT: Optional[int] = None
@@ -47,13 +47,13 @@ CACHE_TIMEOUT: Optional[int] = None
 logger = logging.getLogger(__name__)
 
 @login_required()
-def jipipe_runner_index(request, conn=None, **kwargs) -> HttpResponse:
+def j2o_index(request, conn=None, **kwargs) -> HttpResponse:
     """
-    Display the JIPipeRunner HTML.
+    Display the J2O HTML.
     """
     return render(
         request,
-        'JIPipeRunner/dataset_input.html'
+        'J2O/dataset_input.html'
     )
 
 @require_POST
@@ -64,7 +64,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     Expects a JSON payload containing the .jip file content.
     Returns JSON with the unique job ID of the started job.
 
-    URL: JIPipeRunner/start_jipipe_job/
+    URL: J2O/start_jipipe_job/
     param request: Django HTTP request object
     param conn: OMERO connection object (optional, used for user context)
     """
@@ -150,6 +150,10 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         job_uuid = uuid.uuid4().hex
         start_time = datetime.now().strftime('%d-%m-%Y_%H:%M:%S')
         log_file = os.path.join(LOG_DIR, f'{start_time}_{jip_file_name}_{job_uuid}.log')
+        
+        # Create an empty log file immediately so it's available when the frontend tries to fetch it
+        # The Celery worker will append to this file once it starts
+        Path(log_file).touch()
 
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
@@ -189,7 +193,7 @@ def stop_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     Returns JSON with the status and job_id of the stopped 
     job if successful, or an error otherwise.
 
-    URL: JIPipeRunner/stop_jipipe_job/
+    URL: J2O/stop_jipipe_job/
     param request: Django HTTP request object
     param conn: OMERO connection object (optional, used for user context)
     """
@@ -280,7 +284,7 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
     Returns a JSON response with the job status and log lines.
     If the log is not found, returns a 400 error.
 
-    URL: JIPipeRunner/fetch_jipipe_logs/<str:job_uuid>/
+    URL: J2O/fetch_jipipe_logs/<str:job_uuid>/
     param request: Django HTTP request object
     param job_uuid: Unique identifier for the JIPipe job
     param conn: OMERO connection object (optional, used for user context)
@@ -331,7 +335,7 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
     Expects the file ID as a URL parameter.
     Returns a JSON response with the parsed content of the .jip file.
 
-    URL: JIPipeRunner/get_jipipe_config/<jip_file_id>/
+    URL: J2O/get_jipipe_config/<jip_file_id>/
     param request: Django HTTP request object
     param jip_file_id: Unique identifier for the JIPipe file in OMERO
     param conn: OMERO connection object (optional, used for user context)
@@ -394,7 +398,7 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
     all OMERO groups of the current user. 
     Returns a JSON response with file IDs and names.
 
-    URL: JIPipeRunner/list_jipipe_files/
+    URL: J2O/list_jipipe_files/
     param request: Django HTTP request object
     param conn: OMERO connection object (optional, used for user context)
     """
@@ -453,7 +457,7 @@ def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
     all OMERO groups of the current user. 
     Returns a JSON response with dataset_id and dataset_name.
 
-    URL: JIPipeRunner/list_available_datasets/
+    URL: J2O/list_available_datasets/
     param request: Django HTTP request object
     param conn: OMERO connection object (optional, used for user context)
     """
@@ -509,7 +513,7 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
     Lists all projects in all OMERO groups of the current user. 
     Returns a JSON response with project_id and project_name.
 
-    URL: JIPipeRunner/list_available_projects/
+    URL: J2O/list_available_projects/
     param request: Django HTTP request object
     param conn: OMERO connection object (optional, used for user context)
     """
@@ -736,7 +740,7 @@ def get_temp_output_subdirectories(request, conn=None, **kwargs) -> JsonResponse
     - only allows paths within JIPIPE_TEMP_DIR
     - lists only immediate subdirectories (no recursion)
 
-    URL: JIPipeRunner/get_temp_output_subdirectories/
+    URL: J2O/get_temp_output_subdirectories/
     param request: Django HTTP request object
     param conn: OMERO connection object (optional)
     """

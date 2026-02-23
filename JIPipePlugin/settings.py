@@ -1,4 +1,4 @@
-# JIPipeRunner/settings.py (plugin scope, not the project)
+# J2O/settings.py (plugin scope, not the project)
 from pathlib import Path
 import os
 from omero.config import ConfigXml
@@ -32,5 +32,8 @@ def get_omero_config(key: str, default: str) -> str:
 
 HOME = Path("~").expanduser()
 # Plugin-specific defaults or OMERO overrides
-JIPIPERUNNER_TEMP_DIR = get_omero_config("omero.web.jipipe.tempdir", os.fspath(HOME / "jipipe-runner" / "data"))
-JIPIPERUNNER_LOG_DIR = get_omero_config("omero.web.jipipe.logdir", os.fspath(HOME / "jipipe-runner" / "logs"))
+J2O_TEMP_DIR = get_omero_config("omero.web.jipipe.tempdir", os.fspath(HOME / "j2o-files" / "data"))
+J2O_LOG_DIR = get_omero_config("omero.web.jipipe.logdir", os.fspath(HOME / "j2o-files" / "logs"))
+
+os.makedirs(J2O_LOG_DIR, exist_ok=True)
+os.makedirs(J2O_TEMP_DIR, exist_ok=True)

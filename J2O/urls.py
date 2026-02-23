@@ -2,7 +2,7 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    path('jipipe_runner_index/', views.jipipe_runner_index, name='jipipe_runner_index'),
+    path('j2o_index/', views.j2o_index, name='j2o_index'),
     path('get_jipipe_config/<int:jip_file_id>/', views.get_jipipe_config, name='get_jipipe_config'),
     path("jipipe_start_job/", views.start_jipipe_job, name="jipipe_start_job"),
     path("fetch_jipipe_logs/<str:job_uuid>/", views.fetch_jipipe_logs, name="fetch_jipipe_logs"),

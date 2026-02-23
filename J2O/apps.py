@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class JipiperunnerConfig(AppConfig):
+class J2OConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "JIPipeRunner"
+    name = "J2O"

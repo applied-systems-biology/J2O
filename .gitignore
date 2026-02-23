@@ -1,5 +1,5 @@
 JIPipePlugin/private_settings.py
-JIPipeRunner/__pycache__/*.py[cod]
+J2O/__pycache__/*.py[cod]
 JIPipePlugin/__pycache__/*.py[cod]
 db.sqlite3
 JIPipeDatabase
