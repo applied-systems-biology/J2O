@@ -1,0 +1,11 @@
+/*  custom.css */
+
+/* Hide Writerside header search button (the magnifier in the top bar) */
+button[data-test="search-button"],
+.wh-header__search-button {
+    display: none !important;
+}
+
+.wrap-control {
+    display: none !important;
+}

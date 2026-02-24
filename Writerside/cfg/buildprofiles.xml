@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE buildprofiles SYSTEM "https://resources.jetbrains.com/writerside/1.0/build-profiles.dtd">
+<buildprofiles xsi:noNamespaceSchemaLocation="https://resources.jetbrains.com/writerside/1.0/build-profiles.xsd"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+    <variables>
+
+        <custom-css>custom.css</custom-css>
+        <code-soft-wrap>true</code-soft-wrap>
+        <!-- Logo shown in the website header -->
+        <header-logo>favicon/web-app-manifest-512x512.png</header-logo>
+        <custom-favicons>favicon/favicon-96x96.png, favicon/web-app-manifest-192x192.png, favicon/web-app-manifest-512x512.png</custom-favicons>
+    </variables>
+    <build-profile instance="in">
+        <variables>
+            <noindex-content>false</noindex-content>
+        </variables>
+    </build-profile>
+
+    <footer>
+        <copyright>2026 HKI Jena</copyright>
+        <link href="https://asb-git.hki-jena.de/MWank/OMERO_JIPipe_Plugin">GitLab</link>
+        <link href="https://image.sc">Community</link>
+    </footer>
+
+</buildprofiles>

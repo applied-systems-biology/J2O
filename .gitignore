@@ -8,6 +8,5 @@ debug.log
 .idea/
 jcef-bundle
 build
-Writerside
 celery_worker.log
 celery_worker.pid
