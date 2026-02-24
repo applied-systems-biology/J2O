@@ -99,7 +99,7 @@ elif sudo -u "$OMERO_USER" sudo -n podman ps > /dev/null 2>&1; then
     echo "podman requires sudo for $OMERO_USER, but passwordless sudo is available."
 else
     echo "User '$OMERO_USER' cannot execute podman commands."
-    echo "Consider adding the user to the 'podman' group:"
+    echo "As root, adding the user to the 'podman' group can help:"
     echo "    sudo usermod -aG podman $OMERO_USER"
     echo "    Then log out and back in."
     exit 1
@@ -108,12 +108,59 @@ fi
 # === ENABLE PODMAN USER SOCKET IF NOT ALREADY ENABLED ===
 echo "Ensuring podman user socket is enabled for $OMERO_USER..."
 
-# Use --machine to query/enable the user's systemd without a user session env
-if systemctl --user --machine="${OMERO_USER}@.host" is-enabled podman.socket >/dev/null 2>&1; then
-    echo "podman.socket is already enabled for $OMERO_USER."
+uid=$(id -u "$OMERO_USER")
+xr="/run/user/$uid"
+sock="$xr/podman/podman.sock"
+
+run_user_systemctl() {
+  sudo -u "$OMERO_USER" env \
+    XDG_RUNTIME_DIR="$xr" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$xr/bus" \
+    systemctl --user "$@"
+}
+
+# Make sure user manager exists
+loginctl enable-linger "$OMERO_USER" >/dev/null 2>&1 || true
+systemctl start "user@${uid}.service" >/dev/null 2>&1 || true
+
+# Enable/start socket if needed
+if run_user_systemctl is-enabled podman.socket >/dev/null 2>&1; then
+  echo "podman.socket is already enabled for $OMERO_USER."
 else
-    echo "Enabling podman.socket for $OMERO_USER..."
-    systemctl --user --machine="${OMERO_USER}@.host" enable --now podman.socket
+  echo "Enabling podman.socket for $OMERO_USER..."
+  run_user_systemctl enable --now podman.socket
+fi
+
+# --- Health check: can we connect to the UDS? ---
+podman_socket_healthy() {
+  sudo -u "$OMERO_USER" python3 - <<PY
+import socket, sys
+p="$sock"
+s=socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+try:
+    s.connect(p)
+except Exception:
+    sys.exit(1)
+else:
+    sys.exit(0)
+PY
+}
+
+if podman_socket_healthy; then
+  echo "Podman socket is connectable."
+else
+  echo "Podman socket not connectable (stale listener). Restarting socket..."
+  run_user_systemctl stop podman.socket || true
+  sudo -u "$OMERO_USER" rm -f "$sock" || true
+  run_user_systemctl start podman.socket
+
+  if podman_socket_healthy; then
+    echo "Podman socket recovered and is connectable."
+  else
+    echo "ERROR: Podman socket still not connectable after restart."
+    run_user_systemctl status podman.socket podman.service --no-pager || true
+    exit 1
+  fi
 fi
 
 # === INSTALL J2O ===
@@ -219,6 +266,21 @@ fi
 # === CHECK CELERY ===
 echo "Checking if Celery worker is running for app JIPipePlugin..."
 
+# Define Celery start command with proper environment
+# The --detach flag spawns a new process that needs all env vars explicitly set
+start_celery_worker() {
+    local log_file="$CURRENT_DIR/celery_worker.log"
+    
+    # Use sudo to run as omero-web with full environment
+    # Use bash -c with cd to set working directory for the detached process
+    sudo -u "$OMERO_USER" env \
+        PATH="$OMERO_BIN_PATH:$PATH" \
+        OMERODIR="$OMERODIR" \
+        DJANGO_SETTINGS_MODULE="omeroweb.settings" \
+        PYTHONPATH="$CURRENT_DIR:$OMERODIR" \
+        bash -c "cd $CURRENT_DIR && celery -A JIPipePlugin worker --loglevel=info -E --detach --pidfile=$CURRENT_DIR/celery_worker.pid --logfile=$log_file"
+}
+
 if pgrep -f "celery.*-A JIPipePlugin.*worker" > /dev/null; then
     echo "Celery worker is already running."
     read -p "Do you want to restart the Celery worker to apply changes? [y/n] " CELERY_RESTART_ANSWER
@@ -233,7 +295,7 @@ if pgrep -f "celery.*-A JIPipePlugin.*worker" > /dev/null; then
         sleep 2
         
         echo "Starting Celery worker..."
-        run_as_omero-web celery -A JIPipePlugin worker --loglevel=info -E --detach
+        start_celery_worker
         echo "Celery worker restarted."
     else
         echo "Keeping existing Celery worker running."
@@ -241,10 +303,16 @@ if pgrep -f "celery.*-A JIPipePlugin.*worker" > /dev/null; then
 else
     echo "No Celery worker found. Starting one..."
     
-    # Start celery as background job using nohup
-    (run_as_omero-web celery -A JIPipePlugin worker --loglevel=info -E --detach> /dev/null 2>&1) &
+    # Start celery as background job
+    start_celery_worker
 
-    echo "Celery worker started in background."
+    # Wait a moment and verify the worker started
+    sleep 2
+    if pgrep -f "celery.*-A JIPipePlugin.*worker" > /dev/null; then
+        echo "Celery worker started successfully."
+    else
+        echo "Warning: Celery worker may have failed to start. Check $CURRENT_DIR/celery_worker.log for details."
+    fi
 fi
 
 # === OPTIONALLY RESTART OMERO.WEB ===s
