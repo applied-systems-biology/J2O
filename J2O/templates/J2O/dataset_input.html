@@ -1696,6 +1696,17 @@
         return { exists: true, inputValue: value };
       }
       
+      /**
+       * Create a map of relevant DOM elements with their properties.
+       *
+       * Iterates over the keys from jip_file_parameter_overrides and
+       * jip_file_user_directory_overrides, retrieves the corresponding DOM
+       * elements, and extracts their properties including tagName, value,
+       * placeholder, and for SELECT elements also multiple and selectedValues.
+       * Additionally, it includes dataset-name DOM elements for outputs.
+       *
+       * returns: Object containing DOM element properties keyed by element ID
+       */
       function create_DOM_elements_map() {
 
         // Create map to store relevant DOM elements properties
