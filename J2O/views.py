@@ -84,7 +84,6 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         parameter_override_json = json_request.get('jip_parameter_overrides', {})
         user_directory_override_json = json_request.get('jip_user_directory_overrides', {})
         jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
-        custom_output_config_enabled = json_request.get('custom_output_config_enabled', False)
         major_version = json_request.get('major_version')
         temp_input = json_request.get('input_path')
         temp_output = json_request.get('output_path')
@@ -132,19 +131,6 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
                         shutil.copyfileobj(src, dst)
 
         # TODO: Validate the JIPipe JSON structure here for security and correctness
-
-        if not custom_output_config_enabled:
-            # Ensure there is a JIPipeResults project to store outputs
-            try:
-                results_project = _get_or_create_results_project(conn)
-                results_project_id = int(results_project.getId())
-            except:
-                return results_project
-            # Assign dataset IDs of target output dataset to the define-project-ids nodes to save outputs to
-            for node in jipipe_json.get('graph', {}).get('nodes', {}).values():
-                node_alias_id = node.get('jipipe:alias-id', '').lower()
-                if 'define-project-ids' in node_alias_id:
-                    node['dataset-ids'] = [results_project_id]
 
         # Prepare the log file path and unique job identifier to reference the job later on
         job_uuid = uuid.uuid4().hex
@@ -366,7 +352,7 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
                         json_filename = file
                         break
                 
-                if json_filename is None:
+                if not json_filename:
                     raise FileNotFoundError("No .jip file found inside the zip archive.")
                 
                 # Extract the JSON file content
@@ -433,6 +419,8 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
 
                 # The FileAnnotation wrapper has a .getFile() method returning a FileI
                 file_name = file_annotation.getFile().getName()
+
+                # Only add .jip and .zip files
                 if file_name.endswith(".jip") or file_name.endswith(".zip"):
                     all_jip_annotations.append({
                         'file_id': file_id,
@@ -472,13 +460,13 @@ def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
         # Prepare a Python list to hold {fileID:…, fileName:…} dicts for .jip annotations
         all_available_datasets = []
 
-        # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
+        # 3) Loop through each group, switch the service‐opts, and fetch every Dataset
         for group in user_groups:
             # Set the session’s “active group” to gid
             conn.SERVICE_OPTS.setOmeroGroup(group.id)
 
-            # Retrieve all FileAnnotation objects visible in this group
-            # (returns a list of OMERO‐wrappers for FileAnnotation)
+            # Retrieve all Dataset objects visible in this group
+            # (returns a list of OMERO‐wrappers for Dataset)
             datasets = conn.getObjects("Dataset")
             for dataset in datasets:
 
@@ -490,7 +478,7 @@ def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
                     continue
                 seen_dataset_ids.add(dataset_id)
 
-                # The FileAnnotation wrapper has a .getFile() method returning a FileI
+                # The Dataset wrapper has a .getName() method returning dataset name
                 dataset_name = dataset.getName()
                 all_available_datasets.append({
                     'dataset_id': dataset_id,
@@ -503,6 +491,64 @@ def list_available_datasets(request, conn=None, **kwargs) -> JsonResponse:
         # log the full stack trace so you can see what went wrong
         logger.exception("Error when trying to lists available datasets: {e}", exc_info=1)
         return JsonResponse({'error': f'Internal server error listing available datasets: {e}', 'trace': traceback.format_exc()}, status=500)
+    
+    finally:
+        conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
+
+@login_required()
+def list_available_files(request, conn=None, **kwargs) -> JsonResponse:
+    """
+    Lists all files associated with projects in 
+    all OMERO groups of the current user. 
+    Returns a JSON response with file_id and file_name.
+
+    URL: J2O/list_available_files/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
+    """
+    try:
+        original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
+        user_id = conn.getUserId()
+        user_groups = list(conn.getOtherGroups(user_id))
+
+        # Keep track of which file IDs we’ve already seen
+        seen_file_ids = set()
+
+        # Prepare a Python list to hold {fileID:…, fileName:…} dicts for .jip annotations
+        all_available_files = []
+
+        # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
+        for group in user_groups:
+            # Set the session’s “active group” to gid
+            conn.SERVICE_OPTS.setOmeroGroup(group.id)
+
+            # Retrieve all FileAnnotation objects visible in this group
+            # (returns a list of OMERO‐wrappers for FileAnnotation)
+            annotations = conn.getObjects("FileAnnotation")
+            for annotation in annotations:
+
+                # Extract the numeric ID and the original filename
+                file_obj = annotation.getFile()
+                file_id = file_obj.getId()
+
+                # Skip if we've already added this file_id
+                if file_id in seen_file_ids:
+                    continue
+                seen_file_ids.add(file_id)
+
+                # The FileAnnotation wrapper has a .getFile() method returning a FileI
+                file_name = file_obj.getName()
+                all_available_files.append({
+                    'file_id': file_id,
+                    'file_name': file_name
+                })
+
+        return JsonResponse({'available_files': all_available_files})
+    
+    except Exception as e:
+        # log the full stack trace so you can see what went wrong
+        logger.exception("Error when trying to lists available files: {e}", exc_info=1)
+        return JsonResponse({'error': f'Internal server error listing available files: {e}', 'trace': traceback.format_exc()}, status=500)
     
     finally:
         conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
@@ -528,13 +574,13 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
         # Prepare a Python list to hold {fileID:…, fileName:…} dicts for .jip annotations
         all_available_projects = []
 
-        # 3) Loop through each group, switch the service‐opts, and fetch every FileAnnotation
+        # 3) Loop through each group, switch the service‐opts, and fetch every Project
         for group in user_groups:
             # Set the session’s “active group” to gid
             conn.SERVICE_OPTS.setOmeroGroup(group.id)
 
-            # Retrieve all FileAnnotation objects visible in this group
-            # (returns a list of OMERO‐wrappers for FileAnnotation)
+            # Retrieve all Project objects visible in this group
+            # (returns a list of OMERO‐wrappers for Project)
             projects = conn.getObjects("Project")
             for project in projects:
 
@@ -546,7 +592,7 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
                     continue
                 seen_project_ids.add(project_id)
 
-                # The FileAnnotation wrapper has a .getFile() method returning a FileI
+                # The Project wrapper has a .getName() method returning the project name
                 project_name = project.getName()
                 all_available_projects.append({
                     'project_id': project_id,
@@ -565,45 +611,6 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
     
     finally:
         conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
-
-# Helper: ensure the results project exists
-def _get_or_create_results_project(conn) -> omero.gateway.ProjectWrapper:
-    """
-    Ensure that a project named 'JIPipeResultsDefault' exists on the 
-    OMERO server and in the current group of the active user.
-    If it does not exist, create it with a description.
-    Returns the Project object if it exists or was created successfully.
-    """
-    try:
-        # Define the project name to look for or create
-        DEFAULT_PROJECT_NAME = "JipipeResultsDefault"
-
-        # Attempt to find an existing project
-        existing_results_projects = list(conn.getObjects('Project', attributes={'name': DEFAULT_PROJECT_NAME}))
-        if existing_results_projects:
-            if len(existing_results_projects) > 1:
-                logger.warning("Found %d Projects named '%s' in group %s. Using the first (id=%s).", len(existing_results_projects), DEFAULT_PROJECT_NAME, conn.SERVICE_OPTS.getOmeroGroup(), existing_results_projects[0].getId())
-            return existing_results_projects[0]
-
-        # Create a new Project with the specified name if it does not exist
-        new_project_model = omero.model.ProjectI()
-        new_project_model.setName(rstring(DEFAULT_PROJECT_NAME))
-        new_project_model.setDescription(rstring('Project to save all JIPipe results'))
-        saved_model = conn.getUpdateService().saveAndReturnObject(
-            new_project_model,
-            conn.SERVICE_OPTS,
-        )
-
-        # Get the ID of the newly created project and return the Project object
-        new_id = saved_model.getId().getValue()
-        return conn.getObject('Project', new_id)
-    except Exception as e:
-        # log the full stack trace so you can see what went wrong
-        logger.exception("Failed to create default project to save data to!")
-        return JsonResponse(
-            {'error': f'Internal server error creating default project to save data to: {e}'},
-            status=500
-        )
 
 
 def create_temp_directories(request) -> JsonResponse:
@@ -797,7 +804,7 @@ def get_temp_output_subdirectories(request, conn=None, **kwargs) -> JsonResponse
 
 @require_POST
 @login_required()
-def download_input(request, conn=None, **kwargs):
+def save_input_to_server(request, conn=None, **kwargs):
     try:
         try:
             payload = json.loads(request.body.decode('utf-8'))
@@ -805,67 +812,200 @@ def download_input(request, conn=None, **kwargs):
             return JsonResponse({'error': f'Invalid JSON: {e}'}, status=400)
 
         out_dir = payload['path']
-        dataset_ids = [int(x.strip()) for x in payload['dataset_id'].split(",")]
+        input_key = payload['input_key']
+
+        ids = [int(x.strip()) for x in payload['ids'].split(",")]
 
         if conn is None:
             return JsonResponse({'error': 'No OMERO connection'}, status=401)
 
         os.makedirs(out_dir, exist_ok=True)
 
-        downloaded_files = 0
-        processed_images = 0
-        downloads = []
+        saved_files = 0
+        processed_files = 0
+        saves = []
         errors = []
+        destination_path_s = []
 
-        for dataset_id in dataset_ids:
-            dataset = conn.getObject("Dataset", dataset_id)
-            if dataset is None:
-                return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
+        # Code for one folder structures (input are dataset ids)
+        if input_key == "folder-path":
+            destination_path_s = out_dir
+            for dataset_id in ids:
+                dataset = conn.getObject("Dataset", dataset_id)
+                if dataset is None:
+                    return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
 
-            for img in dataset.listChildren():
-                processed_images += 1
-                fileset = img.getFileset()
-                if fileset is None:
-                    errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to download).'})
-                    continue
+                for img in dataset.listChildren():
+                    processed_files += 1
+                    fileset = img.getFileset()
+                    if fileset is None:
+                        errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
+                        continue
 
-                # Mirror the CLI `omero download Image:<id> <dir>` behavior:
-                # keep the relative path under the Fileset’s template prefix.
-                template_prefix = fileset.getTemplatePrefix() or ""
+                    # Mirror the CLI `omero download Image:<id> <dir>` behavior:
+                    # keep the relative path under the Fileset’s template prefix.
+                    template_prefix = fileset.getTemplatePrefix() or ""
 
-                for ofile in fileset.listFiles():
-                    try:
-                        rel_dir = ofile.path.replace(template_prefix, "", 1)
-                        target_dir = os.path.join(out_dir, rel_dir)
-                        os.makedirs(target_dir, exist_ok=True)
+                    for ofile in fileset.listFiles():
+                        try:
+                            rel_dir = ofile.path.replace(template_prefix, "", 1)
+                            target_dir = os.path.join(out_dir, rel_dir)
+                            os.makedirs(target_dir, exist_ok=True)
 
-                        target_path = os.path.join(target_dir, ofile.name)
+                            target_path = os.path.join(target_dir, ofile.name)
 
-                        if not os.path.exists(target_path):
-                            # `conn.c.download(OriginalFile, local_path)` downloads the binary
-                            conn.c.download(ofile._obj, target_path)
-                            downloaded_files += 1
+                            if not os.path.exists(target_path):
+                                # `conn.c.download(OriginalFile, local_path)` saves the binary
+                                conn.c.download(ofile._obj, target_path)
+                                saved_files += 1
 
-                        downloads.append({
-                            'image_id': img.id,
-                            'file_name': ofile.name,
-                            'saved_to': target_path
-                        })
+                            saves.append({
+                                'image_id': img.id,
+                                'file_name': ofile.name,
+                                'saved_to': target_path
+                            })
 
-                    except Exception as e:
-                        errors.append({
-                            'image_id': img.id,
-                            'file_name': getattr(ofile, 'name', None),
-                            'error': str(e)
-                        })
+                        except Exception as e:
+                            errors.append({
+                                'image_id': img.id,
+                                'file_name': getattr(ofile, 'name', None),
+                                'error': str(e)
+                            })
+
+        # Code for multiple folders structures (input are datasets ids)
+        if input_key == "folder-paths":
+            for dataset_id in ids:
+
+                dataset_dir = os.path.join(out_dir, str(dataset_id))
+                os.makedirs(dataset_dir, exist_ok=True)
+
+                dataset = conn.getObject("Dataset", dataset_id)
+                if dataset is None:
+                    return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
+
+                for img in dataset.listChildren():
+                    processed_files += 1
+                    fileset = img.getFileset()
+                    if fileset is None:
+                        errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
+                        continue
+
+                    # Mirror the CLI `omero download Image:<id> <dir>` behavior:
+                    # keep the relative path under the Fileset’s template prefix.
+                    template_prefix = fileset.getTemplatePrefix() or ""
+
+                    for ofile in fileset.listFiles():
+                        try:
+                            rel_dir = ofile.path.replace(template_prefix, "", 1)
+                            target_dir = os.path.join(dataset_dir, rel_dir)
+                            os.makedirs(target_dir, exist_ok=True)
+
+                            target_path = os.path.join(target_dir, ofile.name)
+
+                            if not os.path.exists(target_path):
+                                # `conn.c.download(OriginalFile, local_path)` saves the binary
+                                conn.c.download(ofile._obj, target_path)
+                                saved_files += 1
+                                destination_path_s.append(target_dir)
+
+                            saves.append({
+                                'image_id': img.id,
+                                'file_name': ofile.name,
+                                'saved_to': target_path
+                            })
+
+                        except Exception as e:
+                            errors.append({
+                                'image_id': img.id,
+                                'file_name': getattr(ofile, 'name', None),
+                                'error': str(e)
+                            })
+
+        # Code for one folder structures (input are OriginalFile ids)
+        if input_key == "file-name":
+            for file_id in ids:
+                # Get the OriginalFile object directly
+                original_file = conn.getObject("OriginalFile", file_id)
+                if original_file is None:
+                    return JsonResponse({'error': f'OriginalFile with ID {file_id} not found'}, status=404)
+
+                # Get the filename directly from the OriginalFile object
+                file_name = original_file.getName() or original_file.name or f"file_{file_id}"
+                
+                # Create target directory
+                target_dir = out_dir
+                os.makedirs(target_dir, exist_ok=True)
+                
+                target_path = os.path.join(target_dir, file_name)
+                
+                try:
+                    if not os.path.exists(target_path):
+                        # Download the file using conn.c.download
+                        conn.c.download(original_file._obj, target_path)
+                        saved_files += 1
+                        destination_path_s = target_path
+
+                    saves.append({
+                        'file_id': file_id,
+                        'file_name': file_name,
+                        'saved_to': target_path
+                    })
+                    processed_files += 1
+
+                except Exception as e:
+                    errors.append({
+                        'file_id': file_id,
+                        'file_name': file_name,
+                        'error': str(e)
+                    })
+
+        # Code for one folder structures (input are OriginalFile ids)
+        if input_key == "file-names":
+            for file_id in ids:
+                # Get the OriginalFile object directly
+                original_file = conn.getObject("OriginalFile", file_id)
+                if original_file is None:
+                    return JsonResponse({'error': f'OriginalFile with ID {file_id} not found'}, status=404)
+
+                # Get the filename directly from the OriginalFile object
+                file_name = original_file.getName() or original_file.name or f"file_{file_id}"
+                
+                # Create target directory
+                target_dir = out_dir
+                os.makedirs(target_dir, exist_ok=True)
+                
+                target_path = os.path.join(target_dir, file_name)
+                
+                try:
+                    if not os.path.exists(target_path):
+                        # Download the file using conn.c.download
+                        conn.c.download(original_file._obj, target_path)
+                        saved_files += 1
+                        destination_path_s.append(target_path)
+
+                    saves.append({
+                        'file_id': file_id,
+                        'file_name': file_name,
+                        'saved_to': target_path
+                    })
+                    processed_files += 1
+
+                except Exception as e:
+                    errors.append({
+                        'file_id': file_id,
+                        'file_name': file_name,
+                        'error': str(e)
+                    })
 
         status = 200 if not errors else 207  # 207 = partial success
         return JsonResponse({
-            'dataset_ids': dataset_ids,
-            'processed_images': processed_images,
-            'downloaded_files': downloaded_files,
-            'downloads': downloads,
-            'errors': errors
+            'ids': ids,
+            'input_key': input_key,
+            'processed_files': processed_files,
+            'saved_files': saved_files,
+            'saves': saves,
+            'errors': errors, 
+            'destination_path_s': destination_path_s
         }, status=status)
 
     except KeyError as e:
@@ -875,7 +1015,7 @@ def download_input(request, conn=None, **kwargs):
     
 @require_POST
 @login_required()
-def upload_output(request, conn=None, **kwargs):
+def save_to_omero(request, conn=None, **kwargs):
     """
     POST JSON:
     {

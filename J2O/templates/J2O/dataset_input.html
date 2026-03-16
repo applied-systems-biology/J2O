@@ -628,7 +628,7 @@
         
         if (!response.ok) {
           console.error(`Error ${response.status}: ${responseJSON.error}\n${responseJSON.trace}`);
-          manually_write_to_log_window(`Error ${response.status}: ${responseJSON.error}`);
+          manually_write_to_log_window(`Error ${response.status}: ${responseJSON.error}\n`);
           return null;
         }
         return responseJSON;
@@ -673,17 +673,17 @@
       async function createDatasetInputFields(nodesMap, userDirectories, container) {
         try{
           // Request all available datasets that can be used as input from the server
-          const response = await fetch('/J2O/list_available_datasets/', { credentials: 'same-origin' });
+          const datasets_response = await fetch('/J2O/list_available_datasets/', { credentials: 'same-origin' });
 
-          if (!response.ok) {
-              const errorJSON = await response.json();
+          if (!datasets_response.ok) {
+              const errorJSON = await datasets_response.json();
               console.error(`Error fetching available Datasets: ${errorJSON.error}\n${errorJSON.trace}`);
               container.innerHTML = `<p style="color:red;">Error fetching available Datasets: ${errorJSON.error}</p>`;
               return;
           }
 
           // Save the available_datasets JSON response to use it later
-          const { available_datasets } = await response.json();
+          const { available_datasets } = await datasets_response.json();
 
           // Map the entries from the available datasets from the server to have them as input for TomSelect
           const dataset_items = available_datasets.map(dataset => ({
@@ -694,6 +694,30 @@
           // Enable users to use original data used from developer (only JIPipe 6 compatible because of RO-Crate)
           if (jip_file_major_version === 6 && jip_file_name.endsWith(".zip")){
             dataset_items.push({ value: "Original data", name: "Use original data" });
+          }
+
+          // Request all available files that can be used as input from the server
+          const files_response = await fetch('/J2O/list_available_files/', { credentials: 'same-origin' });
+
+          if (!files_response.ok) {
+              const errorJSON = await files_response.json();
+              console.error(`Error fetching available files: ${errorJSON.error}\n${errorJSON.trace}`);
+              container.innerHTML = `<p style="color:red;">Error fetching available files: ${errorJSON.error}</p>`;
+              return;
+          }
+
+          // Save the available_files JSON response to use it later
+          const { available_files } = await files_response.json();
+
+          // Map the entries from the available files from the server to have them as input for TomSelect
+          const file_items = available_files.map(file => ({
+            value: file.file_id,
+            name: file.file_name
+          }));
+
+          // Enable users to use original data used from developer (only JIPipe 6 compatible because of RO-Crate)
+          if (jip_file_major_version === 6 && jip_file_name.endsWith(".zip")){
+            file_items.push({ value: "Original data", name: "Use original data" });
           }
 
           // Iterate over user directories and create input fields for them
@@ -712,6 +736,7 @@
               overrideMap: jip_file_user_directory_overrides,
               overrideKey: key_name,
               section: "I/O",
+              allowMultipleSelections: true,
             });
           });
           
@@ -721,22 +746,35 @@
             const nodeInfoId = node["jipipe:node-info-id"];
             if (typeof nodeInfoId !== "string") return;
 
-            const matchedKey = Object.keys(validDatasetInput_nodeInfoID_to_referencePath_map)
-              .find(key => nodeInfoId === key);
+            const matchedKey = Object.keys(validDatasetInput_nodeInfoID_to_referencePath_map).find(key => nodeInfoId === key);
             if (!matchedKey) return;
+
+            let options = null;
+            if (matchedKey.includes("folder")){
+              options = dataset_items.map(x => ({ ...x }))
+            }
+            else if (matchedKey.includes("file")){
+              options = file_items.map(x => ({ ...x }))
+            }
+            else {
+              throw ReferenceError(`Input key ${matchedKey} neither contains folder or file`)
+            }
 
             const inputId = `${uuid}/${validDatasetInput_nodeInfoID_to_referencePath_map[matchedKey]}`;
             const name = node["jipipe:node:name"];
+
+            const allow_multiple = matchedKey.endsWith("s"); // folder-path -> singular input ; folder-paths -> multiple inputs
 
             addTomSelectElementToUI({
               container,
               id: inputId,
               labelText: name,
-              items: dataset_items.map(x => ({ ...x })), // Deep copy required to avoid TomSelect shared-object weirdness
+              items: options, // Deep copy required to avoid TomSelect shared-object weirdness
               placeholder: null,
               overrideMap: jip_file_parameter_overrides,
               overrideKey: inputId,
               section: "I/O",
+              allowMultipleSelections: allow_multiple,
             });
           });
         
@@ -907,6 +945,7 @@
               overrideMap: jip_file_user_directory_overrides,
               overrideKey: key_name,
               section: "I/O",
+              allowMultipleSelections: false,
             });
 
             // Only allow users to select one output Project per node
@@ -921,7 +960,7 @@
             });
           });
 
-          // Iterate over the nodes and create input fields for those with 'define-dataset-ids' alias (input nodes according to JIPRunner convention)
+          // Iterate over the nodes and create input fields for export nodes
           Object.entries(nodesMap).forEach(([uuid, node]) => {
 
             // Skip entry if current node is not an export node
@@ -940,6 +979,7 @@
               overrideMap: jip_file_parameter_overrides,
               overrideKey: inputId,
               section: "I/O",
+              allowMultipleSelections: false,
             });
 
             // Only allow users to select one output Project per node
@@ -989,7 +1029,7 @@
 
       /**
       * Overrides the pipeline parameters and user directories based on user input. It calls create_temp_subdirectories() 
-      * for each input and output node and downloads the input from OMERO via downloadInput().
+      * for each input and output node and saves the input from OMERO to the servers filesystem via saveInputToServer().
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       * @returns {dict} - A dictionary that contains the key/value combinations for the JIPipe parameter override.
       */
@@ -1002,16 +1042,20 @@
           let job_parameter_override = { ...jip_file_parameter_overrides };
           let job_user_directory_override = { ...jip_file_user_directory_overrides };
 
+          // Make a stale copy so selecting a new workflow does not affect current job
+          const stale_jip_file_parameter_overrides_copy = { ...jip_file_parameter_overrides };
+          const stale_job_user_directory_override_copy = { ...jip_file_user_directory_overrides };
+
           let finalValue = null;
 
           // Create a map that links the UUID (i.e. the name) of the temp_output folder to the destination project ID in OMERO
           let uuid_to_project_id_map = {};
 
           // Iterate the parameter_override dict to change the values according to user input
-          for (const [key, _] of Object.entries(jip_file_parameter_overrides)) {
+          for (const [key, _] of Object.entries(stale_jip_file_parameter_overrides_copy)) {
 
             // Get the input error from DOM element. If it does not exist, skip!
-            const { exists, inputValue } = getInputValueOrThrow(key);
+            const { exists, inputValue } = getInputValueOrThrow(key, global_variable_snapshot.override_DOM_elements_map);
             if(!exists){
               console.log(`No input DOM element for ${key} (stored in parameter override)!`);
               continue;
@@ -1029,19 +1073,13 @@
             // Get the folder_uuid, used to determine location to save input/output to in temp_dirs
             const folder_uuid = key.split('/')[0];
 
-            // If dataset input node: create temp dirs and download OMERO data to that location and set value of parameter override to destination path
+            // If dataset input node: create temp dirs and save OMERO data to that location and set value of parameter override to destination path
             if (matchedValue){
               const destination_path = `${global_variable_snapshot.temp_input}/${folder_uuid}`;
               await create_temp_subdirectories(global_variable_snapshot.temp_input, folder_uuid);
-              const responseJSON = await downloadInput(destination_path, inputValue);
+              const responseJSON = await saveInputToServer(destination_path, inputValue, matchedValue);
               console.log("Input object info: ", responseJSON);
-              
-              // Need to differ between list of entries or singular entry
-              if (matchedValue.endsWith("s")) {
-              finalValue = [destination_path];
-              } else {
-              finalValue = destination_path;
-              }
+              finalValue = responseJSON['destination_path_s'];
             
             // If export node: Change the expression in file-path and add the expression to the parameter override
             }else if (key.includes("file-path")){
@@ -1049,23 +1087,25 @@
               const expressionPath = `PATH_COMBINE("${global_variable_snapshot.temp_output.replace(/\\/g, '\\\\')}/${folder_uuid}/", auto_file_name)`;  //TODO: Figure out how to name the files
               finalValue = {expression: expressionPath};
               await create_temp_subdirectories(global_variable_snapshot.temp_output, folder_uuid);
+
+            // If any other parameter input
             }else{
               finalValue = transformToJIPipeCompatibleValue(inputValue, key);
             }
 
             // Overwrite the entry with the JIPipe compatible value
             delete job_parameter_override[key];
-            job_parameter_override[key] = finalValue; // Weird split needs to happen cause we need random value before key for TomSelect uniqueness
+            job_parameter_override[key] = finalValue;
           }
 
           // Print content to console for checking correctness!
           console.log("JIPipe parameter override input: ", job_parameter_override);
           
           // Iterate the user_directory_override dict to change the values according to user input
-          for (const [key, _] of Object.entries(jip_file_user_directory_overrides)) {
+          for (const [key, _] of Object.entries(stale_job_user_directory_override_copy)) {
             
             // Get the input error from DOM element. If it does not exist, skip!
-            const { exists, inputValue } = getInputValueOrThrow(key);
+            const { exists, inputValue } = getInputValueOrThrow(key, global_variable_snapshot.override_DOM_elements_map);
             if(!exists){
               console.log(`No input DOM element for ${key} (stored in user directory override)!`);
               continue;
@@ -1090,7 +1130,7 @@
 
               // Only put input data from OMERO in temp folder if user dir is marked as input
               if (key.includes("input")){
-                const responseJSON = await downloadInput(destination_path, inputValue);
+                const responseJSON = await saveInputToServer(destination_path, inputValue, "folder-paths"); // Input user directories are handled like folder with a subfolder for each dataset
                 console.log("Input object info: ", responseJSON)
               }
 
@@ -1129,13 +1169,14 @@
       }
 
       /**
-       * Downloads the images from the OMERO dataset specified by dataset_ID to the given destination_path.
-       * @param {string} destination_path - Path to the download destination folder.
-       * @param {string} dataset_ID - The OMERO dataset ID(s) (comma separated) from which the images should be downloaded.
-       * @returns {dict} - Returns either info about the downloaded data in form of JSON or the raw response if it is not JSON.
+       * Saves the images from the OMERO dataset specified by dataset_ID to the given destination_path.
+       * @param {string} destination_path - Path to the destination folder.
+       * @param {string} IDs - The OMERO ID(s) (comma separated) from which the image or file should be saved.
+       * @param {string} validInputKey - A key that is considered valid input for the input nodes. This is used to determine how the folder structure will be done by save_input_to_server.
+       * @returns {dict} - Returns either info about the saved data in form of JSON or the raw response if it is not JSON.
       */
-      async function downloadInput(destination_path, dataset_ID) {
-        const res = await fetch('/J2O/download_input/', {
+      async function saveInputToServer(destination_path, IDs, validInputKey) {
+        const res = await fetch('/J2O/save_input_to_server/', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -1143,7 +1184,7 @@
             'X-CSRFToken': csrftoken,
             'Accept': 'application/json'
           },
-          body: JSON.stringify({ path: destination_path, dataset_id: dataset_ID })
+          body: JSON.stringify({ path: destination_path, ids: IDs, input_key: validInputKey })
         });
 
         const contentType = res.headers.get('content-type') || '';
@@ -1155,7 +1196,7 @@
         }
 
         if (!res.ok) {
-          console.error('download_input failed', { status: res.status, body: raw });
+          console.error('save_input_to_server failed', { status: res.status, body: raw });
           throw new Error((data && data.error) || `HTTP ${res.status}`);
         }
 
@@ -1186,7 +1227,6 @@
             jip_parameter_overrides: job_parameter_override,
             jip_user_directory_overrides: job_user_directory_override,
             jip_name: global_variable_snapshot.jip_file_name,
-            custom_output_config_enabled: document.getElementById('enableOutputConfig').checked,
             major_version: global_variable_snapshot.jip_file_major_version,
             input_path: global_variable_snapshot.temp_input,
             output_path: global_variable_snapshot.temp_output,
@@ -1328,16 +1368,16 @@
       }
       
       /**
-       * Uploads the output from the JIPipe pipeline to the OMERO output project specified by the user. The name will either be user-defined or,
+       * Saves the output from the JIPipe pipeline to the OMERO output project specified by the user. The name will either be user-defined or,
        * if no input was given, the name of the .jip file followed by a timestamp from when the job was started.
        * @param {dict} parameter_override_json - JSON that contains the parameter override as defined in the JIPipe documentation.
        * @param {dict} uuid_to_project_id_map - A dictionary that maps the uuid of the output nodes to a user defined project id in OMERO.
        * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
        * @param {string} job_start_time - A string containing the start time of the job for tagging the default folder with a timestamp.
-       * @returns {dict} - Returns either info about the downloaded data in form of JSON or the raw response if it is not JSON.
+       * @returns {dict} - Returns either info about the saved data in form of JSON or the raw response if it is not JSON.
       */
-      async function uploadOutput(uuid_to_project_id_map, global_variable_snapshot, job_start_time, log_file_path) {
-        manually_write_to_log_window('Uploading results to OMERO...\n')
+      async function saveOutputToOMERO(uuid_to_project_id_map, global_variable_snapshot, job_start_time, log_file_path) {
+        manually_write_to_log_window('Saving results to OMERO...\n')
         const results = [];
 
         // Get subdirectories from temp_output folder
@@ -1357,16 +1397,17 @@
 
         for (const dir of data.subdirectories) {
           const folder_uuid = dir; // Folder name of the output corresponding to the UI element where the user selects output project
-          if (document.getElementById(`${folder_uuid}/dataset-name`) === null){
+
+          const dataset_name_DOM_element = global_variable_snapshot.override_DOM_elements_map[`${folder_uuid}/dataset-name`];
+          if (!dataset_name_DOM_element){
             continue;
           }
           const path_to_output_folder = `${global_variable_snapshot.temp_output}/${folder_uuid}`; // Actual filesystem path where output is put by jipipe via export nodes
-          const dataset_name = document.getElementById(`${folder_uuid}/dataset-name`).value !== "" ? document.getElementById(`${folder_uuid}/dataset-name`).value 
-                               : `${document.getElementById(`${folder_uuid}/dataset-name`).placeholder}@${job_start_time}`;  // Custom name for the dataset that will be created
+          const dataset_name = dataset_name_DOM_element.value !== "" ? dataset_name_DOM_element.value : `${dataset_name_DOM_element.placeholder}@${job_start_time}`;  // Custom name for the dataset that will be created
           const project_id = uuid_to_project_id_map[folder_uuid]  // Target project in which the dataset will be created
 
-          // CALL UPLOAD API POST FUNCTION WITH THESE PARAMETERS (FIRST CREATE THE DATASET IF MISSING THEN UPLOAD)
-          const res = await fetch('/J2O/upload_output/', {
+          // CALL SAVE_TO_OMERO API POST FUNCTION WITH THESE PARAMETERS (FIRST CREATE THE DATASET IF MISSING THEN SAVE)
+          const res = await fetch('/J2O/save_to_omero/', {
           method: 'POST',
           credentials: 'same-origin',
           headers: {
@@ -1393,11 +1434,11 @@
           }
 
           if (!res.ok) {
-            console.error('upload_output failed', { status: res.status, body: raw });
+            console.error('save_to_omero failed', { status: res.status, body: raw });
             throw new Error((data && data.error) || `HTTP ${res.status}`);
           }
 
-          // Push one result per upload attempt
+          // Push one result per save attempt
           results.push({
             folder_uuid,
             request: { path: path_to_output_folder, project_id, dataset_name },
@@ -1563,7 +1604,7 @@
        * @param {string} section - Section identifier used to control TomSelect rendering behavior
        *                           (e.g. "I/O" for ID → name display).
        */
-      function addTomSelectElementToUI({container, id, labelText, items, placeholder = null, overrideMap, overrideKey = id, section = "I/O",}){
+      function addTomSelectElementToUI({container, id, labelText, items, placeholder = null, overrideMap, overrideKey = id, section = "I/O", allowMultipleSelections}){
         // Create entry to override map (initial value is irrelevant as it gets changed later on)
         overrideMap[overrideKey] = placeholder;
 
@@ -1574,7 +1615,7 @@
         // Create select element
         const select_element = document.createElement("select");
         select_element.id = id;
-        select_element.multiple = true;
+        select_element.multiple = allowMultipleSelections;
         select_element.placeholder = placeholder;
 
         // Create a label for select element
@@ -1626,25 +1667,79 @@
       }
 
       /**
-       * Gets the input value given by the user in a specified DOM element by ID. Will throw an error when no input is given!
-       * @param {string} domID - ID of the DOM element to retrieve the value from.
-       * @return {dict} - Returns a dictionary with the exists entry telling wether the DOM element for the given ID. If it does, also provides the stored value as inputValue.
-      **/
-      function getInputValueOrThrow(domID) {
-        const el = document.getElementById(domID);
-        if (!el) return { exists: false, inputValue: null };
+       * Gets the input value from the relevant_DOM_elements map.
+       * Throws an error when no input is given.
+       * @param {string} domID
+       * @param {Object} relevant_DOM_elements_maps
+       */
+      function getInputValueOrThrow(domID, relevant_DOM_elements_map) {
+        const relevant_DOM_element = relevant_DOM_elements_map[domID];
+        if (!relevant_DOM_element) return { exists: false, inputValue: null };
 
         let value;
-        if (el.tagName === "SELECT" && el.multiple) {
-          const arr = Array.from(el.selectedOptions).map(o => o.value);
-          value = arr.length ? arr.join(", ") : el.placeholder;
-          if (!value) throw new Error("Empty input fields must be filled!");
+
+        if (relevant_DOM_element.tagName === "SELECT" && relevant_DOM_element.multiple) {
+          const arr = relevant_DOM_element.selectedValues || [];
+          value = arr.length ? arr.join(", ") : relevant_DOM_element.placeholder;
+
+          if (!value) {
+            throw new Error("Empty input fields must be filled!");
+          }
         } else {
-          value = el.value !== "" ? el.value : el.placeholder;
+          value = relevant_DOM_element.value !== "" ? relevant_DOM_element.value : relevant_DOM_element.placeholder;
+
+          if (!value) {
+            throw new Error("Empty input fields must be filled!");
+          }
         }
+
         return { exists: true, inputValue: value };
       }
       
+      function create_DOM_elements_map() {
+
+        // Create map to store relevant DOM elements properties
+        const relevant_DOM_elements = {};
+
+        // Add all keys of relevant DOM elements in provided object (including the associated dataset-name elements that store output names)
+        const addKeys = (obj) => {
+          for (const key of Object.keys(obj)) {
+            const relevant_DOM_element = document.getElementById(key);
+            if (!relevant_DOM_element) continue; // or store null if you prefer
+
+            const common_properties = {
+              tagName: relevant_DOM_element.tagName,
+              value: "value" in relevant_DOM_element ? relevant_DOM_element.value : "",
+              placeholder: "placeholder" in relevant_DOM_element ? relevant_DOM_element.placeholder : "",
+            };
+
+            relevant_DOM_elements[key] =
+              relevant_DOM_element.tagName === "SELECT"
+                ? {
+                    ...common_properties,
+                    multiple: relevant_DOM_element.multiple,
+                    selectedValues: Array.from(relevant_DOM_element.selectedOptions, (o) => o.value),
+                  }
+                : common_properties;
+
+            // Also add dataset name DOM elements for outputs
+            const dataset_name_key = `${key.split("/")[0]}/dataset-name`
+            const dataset_name_DOM_element = document.getElementById(dataset_name_key);
+            if (!dataset_name_DOM_element) continue;
+
+            relevant_DOM_elements[dataset_name_key] = {
+              value: "value" in dataset_name_DOM_element ? dataset_name_DOM_element.value : "",
+              placeholder: "placeholder" in dataset_name_DOM_element ? dataset_name_DOM_element.placeholder : "",
+            }
+          }
+        };
+
+        addKeys(jip_file_parameter_overrides);
+        addKeys(jip_file_user_directory_overrides);
+
+        return relevant_DOM_elements;
+      }
+
       // =============== Initialization: fetch config and render UI =====================
       try {
         // Load the running jobs and available .jip files
@@ -1714,6 +1809,12 @@
                 // Replace the visible infoSection with the content of the buffer div
                 infoSection.replaceChildren(...buffer_div.childNodes);
                 infoSection.style.display = "block";
+
+              // If jip file content is empty
+              } else{
+                startRunnerBtn.disabled = true;
+                infoSection.innerHTML = originalInfoState;
+                infoSection.style.display = "none";
               }
             // If no .jip file is selected, reset the info sections to their original empty state
             } else {
@@ -1735,8 +1836,11 @@
 
         // EventListener: On click of the start button, execute the pipeline job
         document.getElementById('startRunnerBtn').addEventListener('click', async (event) => {
+
+          // Measure runtime
           console.time();
-          // Short button disable so it can't be clicked twice in a row
+
+          // Disable start button shortly so it can't be clicked twice in a row
           const startRunnerBtn= document.getElementById('startRunnerBtn');
           startRunnerBtn.disabled = true;
           startRunnerBtn.textContent = "Starting...";
@@ -1762,8 +1866,11 @@
               jip_file_major_version,
               temp_input,
               temp_output,
-              selectedJipFileID
+              selectedJipFileID,
+              override_DOM_elements_map: create_DOM_elements_map() // Create a map of DOM elements that contain info for overrides on start of job so DOM updates don't delete info
             };
+
+            console.log("OVERRIDE DOM ELEMENTS", global_variable_snapshot.override_DOM_elements_map)
 
             // Create the parameter override containing user input to be provided to JIPipe
             let { job_parameter_override, job_user_directory_override, uuid_to_project_id_map } = await createJobPipelineOverride(global_variable_snapshot);
@@ -1772,18 +1879,18 @@
             const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot);
             loadRunningJobs();
 
-            // Upload the output (and the logfile, even when no output is generated)
-            const output_infos = await uploadOutput(uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
+            // save the output (and the logfile, even when no output is generated)
+            const output_infos = await saveOutputToOMERO(uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
 
-            // Output the number of uploaded files to the log window
+            // Output the number of saved files to the log window
             let num_imported_files = 0;
             let num_attached_files = 0;
             for (const entry of output_infos){
               num_imported_files += entry["num_imported_files"];
               num_attached_files += entry["num_attached_files"];
             }
-            manually_write_to_log_window(`Uploaded ${num_imported_files} image(s) and attached ${num_attached_files} non-image file(s)!\n`);
-            console.log("Output upload info: ", output_infos);
+            manually_write_to_log_window(`Saved ${num_imported_files} image(s) and attached ${num_attached_files} non-image file(s)!\n`);
+            console.log("Output saved info: ", output_infos);
 
           // Catch errors and display a useful message to the user depending on the caught error
           }catch(err){
