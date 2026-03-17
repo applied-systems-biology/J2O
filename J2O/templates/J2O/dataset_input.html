@@ -959,41 +959,6 @@
               placeholder: `${jip_file_name}`,
             });
           });
-
-          // Iterate over the nodes and create input fields for export nodes
-          Object.entries(nodesMap).forEach(([uuid, node]) => {
-
-            // Skip entry if current node is not an export node
-            if (!node["jipipe:alias-id"]?.includes("export")) return;
-
-            // Define ID of input element to reference later
-            const inputId = `${uuid}/file-path`;
-
-            // Add TomSelect element to DOM
-            const { row, select_element } = addTomSelectElementToUI({
-              container,
-              id: inputId,
-              labelText: node["jipipe:node:name"],
-              items: project_items.map(x => ({ ...x })),
-              placeholder: NO_PROJECT_INPUT_VALUE,
-              overrideMap: jip_file_parameter_overrides,
-              overrideKey: inputId,
-              section: "I/O",
-              allowMultipleSelections: false,
-            });
-
-            // Only allow users to select one output Project per node
-            select_element.multiple = false;
-
-            // add dataset-name input to the SAME row element in DOM
-            addTextInputToRow({
-              row,
-              id: `${uuid}/dataset-name`,
-              labelText: "Output dataset name:",
-              placeholder: `${jip_file_name}`,
-            });
-          });
-        
         }catch(err){
           console.error(`${err.name} constructing Project input fields: ${err.message}`);
           container.innerHTML = `<p style="color:red;">${err.name} constructing Project input fields: ${err.message}</p>`;
@@ -1080,14 +1045,6 @@
               const responseJSON = await saveInputToServer(destination_path, inputValue, matchedValue);
               console.log("Input object info: ", responseJSON);
               finalValue = responseJSON['destination_path_s'];
-            
-            // If export node: Change the expression in file-path and add the expression to the parameter override
-            }else if (key.includes("file-path")){
-              uuid_to_project_id_map[folder_uuid] = inputValue;
-              const expressionPath = `PATH_COMBINE("${global_variable_snapshot.temp_output.replace(/\\/g, '\\\\')}/${folder_uuid}/", auto_file_name)`;  //TODO: Figure out how to name the files
-              finalValue = {expression: expressionPath};
-              await create_temp_subdirectories(global_variable_snapshot.temp_output, folder_uuid);
-
             // If any other parameter input
             }else{
               finalValue = transformToJIPipeCompatibleValue(inputValue, key);
