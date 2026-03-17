@@ -1031,8 +1031,10 @@
               continue;
             }
 
-            // Ignore parameter overrides for use of original data (JIPipe 6 only)
-            if (inputValue === "Original data" || global_variable_snapshot.jip_file_content["jipipe:doc:parameters"]["types"][key].includes("optional")){
+            // Ignore parameter overrides for use of original data as well as complex parameters (JIPipe 6 only)
+            const paramTypes = global_variable_snapshot.jip_file_content?.["jipipe:doc:parameters"]?.["types"];
+            const paramType = paramTypes?.[key];
+            if (inputValue === "Original data" || (paramType && paramType.includes("optional"))){
               delete job_parameter_override[key];
               continue;
             }
@@ -1759,6 +1761,19 @@
                 // Read the node graph from the .jip file and use it to dynamically fill the UI
                 const nodesMap = jip_file_content.graph.nodes;
                 const userDirectories = jip_file_content?.metadata?.["user-directories"]?.["user-directories"]?.items ?? [];
+                
+                // Validate user directories: warn if key contains neither input nor output, or both
+                userDirectories.forEach(userDir => {
+                    const key = userDir?.parameters?.key?.value ?? "unknown";
+                    const keyLower = key.toLowerCase();
+                    const hasNeitherInputOrOutput = !keyLower.includes("input") && !keyLower.includes("output");
+                    const hasBothInputAndOutput = keyLower.includes("input") && keyLower.includes("output");
+                    
+                    if (hasBothInputAndOutput || hasNeitherInputOrOutput) {
+                        manually_write_to_log_window(`WARNING: User directory "${key}" does not adhere to naming convention. This may crash your workflow!\n`);
+                    }
+                });
+
                 const {inputCount, outputCount } = displayNodeSummary(nodesMap, tempFileInfo);
                 await createDatasetInputFields(nodesMap, userDirectories, tempInput);
                 createParameterFields(jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters'], nodesMap, tempParams);
