@@ -808,6 +808,11 @@
               if (jip_file_major_version >= 6){
                 refParameterDataType = jip_file_content["jipipe:doc:parameters"]["types"][entry.path]
                 refParameterArchetype = jip_file_content["jipipe:doc:parameters"]["ref"][refParameterDataType]["archetype"]
+                
+                // Skip optional reference parameters (complex parameters that should not be edited by users!)
+                if (refParameterDataType && refParameterDataType.includes("optional")){
+                  return;
+                }
               }
 
               // use UUID of the node to create a unique ID for the input field
@@ -1027,7 +1032,7 @@
             }
 
             // Ignore parameter overrides for use of original data (JIPipe 6 only)
-            if (inputValue === "Original data"){
+            if (inputValue === "Original data" || global_variable_snapshot.jip_file_content["jipipe:doc:parameters"]["types"][key].includes("optional")){
               delete job_parameter_override[key];
               continue;
             }
