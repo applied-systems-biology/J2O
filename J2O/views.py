@@ -61,7 +61,8 @@ def j2o_index(request, conn=None, **kwargs) -> HttpResponse:
 def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
     """
     Start a JIPipe job in the background using Celery.
-    Expects a JSON payload containing the .jip file content.
+    Expects a JSON payload with jip_file_id - the JIPipe file content is fetched
+    server-side from OMERO to avoid large request bodies.
     Returns JSON with the unique job ID of the started job.
 
     URL: J2O/start_jipipe_job/
@@ -80,7 +81,6 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
 
         # Parse the incoming configuration
         json_request = json.loads(request.body.decode('utf-8'))
-        jipipe_json = json_request.get('jip_content')
         parameter_override_json = json_request.get('jip_parameter_overrides', {})
         user_directory_override_json = json_request.get('jip_user_directory_overrides', {})
         jip_file_name = json_request.get('jip_name', 'JIPipeProject.jip')
@@ -89,15 +89,34 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         temp_output = json_request.get('output_path')
         jip_file_id = json_request.get('jip_file_id')
 
+        # Server-side fetch of JIPipe file content from OMERO (avoids large request body)
+        jip_file = conn.getObject('originalfile', jip_file_id)
+        if jip_file is None:
+            raise FileNotFoundError(f"JIPipe file with ID {jip_file_id} not found.")
+
+        raw_bytes = b''.join(jip_file.getFileInChunks())
+        if jip_file.getName().endswith('.jip'):
+            jipipe_json = json.loads(raw_bytes.decode('utf-8'))
+        elif jip_file.getName().endswith('.zip'):
+            # Extract .jip from zip archive
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zip_ref:
+                zip_contents = zip_ref.namelist()
+                json_filename = None
+                for file in zip_contents:
+                    if file.endswith('.jip'):
+                        json_filename = file
+                        break
+                if not json_filename:
+                    raise FileNotFoundError("No .jip file found inside the zip archive.")
+                with zip_ref.open(json_filename) as json_file:
+                    jipipe_json = json.loads(json_file.read().decode('utf-8'))
+        else:
+            raise TypeError("Selected file is neither .jip nor .zip and is therefore not supported!")
+
+        # For .zip files, also extract all other files to temp_input for the Celery task
+        # (jipipe_json was already extracted above)
         if jip_file_name.endswith(".zip"):
-            # Get the .zip file from OMERO using the provided file ID
-            jip_file = conn.getObject("originalfile", jip_file_id)
-            if jip_file is None:
-                raise FileNotFoundError(f"ZIP file with ID {jip_file_id} not found.")
-
-            raw_bytes = b"".join(jip_file.getFileInChunks())
-
-            # Optional: store the zip for debugging/reproducibility
+            # Store the zip for debugging/reproducibility
             zip_path = os.path.join(temp_input, jip_file_name)
             with open(zip_path, "wb") as f:
                 f.write(raw_bytes)
@@ -107,9 +126,11 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
                 for member in zf.infolist():
                     member_path = member.filename.replace("\\", "/")
 
-                    # Skip weird entries (empty or root)
+                    # Skip weird entries (empty or root) and the .jip file (already processed)
                     if not member_path or member_path.endswith("/") and member_path.strip("/") == "":
                         continue
+                    if member_path.endswith('.jip'):
+                        continue  # Already extracted as jipipe_json
 
                     # Final path under temp_input
                     out_path = os.path.join(temp_input, member_path)
@@ -129,8 +150,6 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
                     os.makedirs(os.path.dirname(out_path), exist_ok=True)
                     with zf.open(member) as src, open(out_path, "wb") as dst:
                         shutil.copyfileobj(src, dst)
-
-        # TODO: Validate the JIPipe JSON structure here for security and correctness
 
         # Prepare the log file path and unique job identifier to reference the job later on
         job_uuid = uuid.uuid4().hex
