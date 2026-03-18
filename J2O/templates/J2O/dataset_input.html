@@ -187,6 +187,17 @@
       flex-direction: column;
     }
 
+    /* Make job meta clickable for log viewing */
+    .job-meta.clickable-job {
+      cursor: pointer;
+      flex: 1;
+    }
+
+    .job-meta.clickable-job:hover {
+      background: #e8f0fe;
+      border-radius: 4px;
+    }
+
     .job-name {
       font-weight: 600;
     }
@@ -515,15 +526,15 @@
         // Add the job reference to the active jobs set to track it
         activeJobs.add(jobId);
 
-        // Create a new list item for the job and append it to the running jobs section list 
+        // Create a new list item for the job and append it to the running jobs section list
         const job_list = document.getElementById('runningJobsList');
         const job_list_item = document.createElement('li');
         job_list_item.id = `job-${jobId}`;
 
-        // Populate the job list item with the job ID and a cancel button
+        // Populate the job list item with the job ID, clickable area for log, and a cancel button
         job_list_item.innerHTML = `
           <div class="job-item">
-            <div class="job-meta">
+            <div class="job-meta clickable-job" title="Click to view log">
               <span class="job-name">${name}</span>
               <span class="job-time">${start_time}</span>
             </div>
@@ -532,6 +543,14 @@
             </button>
           </div>
         `;
+
+        // Add click event to open log window for this specific job
+        const jobMeta = job_list_item.querySelector('.clickable-job');
+        jobMeta.addEventListener('click', (e) => {
+          // Don't open log window if clicking on the cancel button
+          if (e.target.classList.contains('cancel-btn')) return;
+          openLogWindowForJob(jobId, name, start_time);
+        });
 
         // Add an event listener to the cancel button to stop the job when clicked (awaiting confirmation by user first)
         const btn = job_list_item.querySelector('.cancel-btn');
@@ -1205,7 +1224,7 @@
           throw new Error(`Error starting JIPipe task: ${responseJSON.error}`)
         }
 
-        // Get the response to add the job to the UI 
+        // Get the response to add the job to the UI
         const { job_id: jobId, job_name: name, job_start_time: start_time, log_file_path: logPath } = responseJSON;
         loadRunningJobs();
 
@@ -1300,7 +1319,7 @@
                   if (logs === null){
                     await sleep(latest_job_id !== jobId ? 5000 : 1000);
                     continue;
-                  } 
+                  }
 
                   // Update log output if new logs appeared
                   if (logs.length > previousLogLength && latest_job_id === jobId) {
@@ -1329,7 +1348,119 @@
               return status;
           }
       }
-      
+            
+      /**
+       * Open a dedicated log window for a specific job.
+       * @param {string} jobId - The ID of the job to stream logs for
+       * @param {string} jobName - The name of the job
+       * @param {string} startTime - The start time of the job
+       */
+      function openLogWindowForJob(jobId, jobName, startTime) {
+        // Create a new window/tab for the log stream
+        const logWindow = window.open('', `_log_${jobId}`, 'width=800,height=600,resizable=yes,scrollbars=yes');
+        
+        if (!logWindow) {
+          alert('Please allow popups to view the log window.');
+          return;
+        }
+
+        // Write the initial HTML content to the new window
+        logWindow.document.write(`
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8">
+            <title>Log: ${jobName} (${startTime})</title>
+            <style>
+              body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background: #fafafa; }
+              #logOutput {
+                background: #fff; border: 1px solid #e0e0e0; padding: 10px;
+                white-space: pre-wrap; overflow-y: auto; height: calc(100vh - 80px);
+                font-family: monospace; font-size: 12px;
+              }
+              .status { padding: 10px; margin-bottom: 10px; border-radius: 4px; }
+              .running { background: #e3f2fd; color: #1565c0; }
+              .finished { background: #e8f5e9; color: #2e7d32; }
+              .canceled { background: #ffebee; color: #c62828; }
+              h2 { margin-top: 0; }
+            </style>
+          </head>
+          <body>
+            <h2>Log: ${jobName}</h2>
+            <p>Started: ${startTime}</p>
+            <div id="status" class="status running">Status: Loading log live stream...</div>
+            <div id="logOutput">Loading logs...</div>
+            <script>
+              const jobId = "${jobId}";
+              const csrftoken = "${csrftoken}";
+              let previousLogLength = 0;
+              let finished = false;
+
+              const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+              async function fetchLogs() {
+                try {
+                  const resp = await fetch('/J2O/fetch_jipipe_logs/' + jobId + '/', { credentials: 'same-origin' });
+                  if (!resp.ok) return null;
+                  return await resp.json();
+                } catch (err) {
+                  console.error('Error fetching logs:', err);
+                  return null;
+                }
+              }
+
+              async function updateLog() {
+                if (finished) return;
+                
+                const logData = await fetchLogs();
+                if (!logData) {
+                  await sleep(1000);
+                  updateLog();
+                  return;
+                }
+
+                const { status, logs } = logData;
+                
+                if (logs && logs.length > previousLogLength) {
+                  const newLines = logs.slice(previousLogLength).join('\\n');
+                  document.getElementById('logOutput').textContent += newLines + '\\n';
+                  document.getElementById('logOutput').scrollTop = document.getElementById('logOutput').scrollHeight;
+                  previousLogLength = logs.length;
+                }
+
+                if (document.getElementById('logOutput').textContent.length > ${MAX_CHARS_LOG_DISPLAY}){
+                  document.getElementById('logOutput').textContent = document.getElementById('logOutput').textContent.slice(-${MAX_CHARS_LOG_DISPLAY});
+                }
+
+                // Update status display
+                const statusEl = document.getElementById('status');
+                if (status === 'running') {
+                  statusEl.className = 'status running';
+                  statusEl.textContent = 'Status: Running...';
+                } else if (status === 'finished') {
+                  statusEl.className = 'status finished';
+                  statusEl.textContent = 'Status: Finished';
+                  finished = true;
+                } else if (status === 'canceled') {
+                  statusEl.className = 'status canceled';
+                  statusEl.textContent = 'Status: Canceled';
+                  finished = true;
+                }
+
+                if (!finished) {
+                  await sleep(1000);
+                  updateLog();
+                }
+              }
+
+              updateLog();
+            <\/script>
+          </body>
+          </html>
+        `);
+        logWindow.document.close();
+      }
+
       /**
        * Saves the output from the JIPipe pipeline to the OMERO output project specified by the user. The name will either be user-defined or,
        * if no input was given, the name of the .jip file followed by a timestamp from when the job was started.
@@ -1719,7 +1850,7 @@
         // Load the running jobs and available .jip files
         document.getElementById('jipipe_info_input_sections').style.display = "none";  // Hide info DOM elements until .jip file is selected
         loadRunningJobs();
-        // setInterval(loadRunningJobs, LOAD_JOBS_INTERVAL * 1000);  // No better solution since OMERO.web doesn't support WebSockets ???NOT REALLY NECESSARY???
+        setInterval(loadRunningJobs, LOAD_JOBS_INTERVAL * 1000);  // No better solution since OMERO.web doesn't support WebSockets
         listAvailableJIPFiles();
 
         // EventListener: On change of the .jip file selector, fetch the selected .jip file content and update the UI accordingly
