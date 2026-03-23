@@ -146,7 +146,7 @@ Below the button that starts the pipeline execution, you will find the log windo
 
 The log window will only ever display the content of the log file from the most recent job started by the user. To review old log files or to inspect errors of jobs that ran in the background, you can find the log files under the attachment tab of the output dataset. By clicking on the file, an automated download will be started.
 
-![Old log files](OldLogFiles.png)
+![Old log files](FindLogFiles.png)
 
 
 ## Pipeline design constraints
