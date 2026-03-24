@@ -52,7 +52,7 @@ omero config set omero.web.caches '{"default": {"BACKEND": "django_redis.cache.R
 
 ### Step 6 - Edit OMERO config
 
-Add "JIPipeRunner" to the list of installed apps using [omero-web](https://github.com/ome/omero-web):
+Add "J2O" to the list of installed apps using [omero-web](https://github.com/ome/omero-web):
 ```bash
 omero config append omero.web.apps '"J2O"'
 ```

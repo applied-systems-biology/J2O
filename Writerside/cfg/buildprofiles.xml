@@ -7,6 +7,8 @@
 
         <custom-css>custom.css</custom-css>
         <code-soft-wrap>true</code-soft-wrap>
+        <primary-color>#65a4e3</primary-color>
+        <color-preset>soft</color-preset>
         <!-- Logo shown in the website header -->
         <header-logo>favicon/web-app-manifest-512x512.png</header-logo>
         <custom-favicons>favicon/favicon-96x96.png, favicon/web-app-manifest-192x192.png, favicon/web-app-manifest-512x512.png</custom-favicons>
