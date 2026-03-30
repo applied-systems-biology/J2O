@@ -4,6 +4,12 @@ from pathlib import Path
 from django.core.cache import cache
 import podman
 from podman.errors import ImageNotFound, NotFound
+from JIPipePlugin import settings
+import time
+
+CPU_PERIOD = settings.CPU_PERIOD
+PER_JOB_CPU_QUOTA = settings.PER_JOB_CPU_QUOTA
+PER_JOB_MEM_LIMIT = settings.PER_JOB_MEM_LIMIT
 
 """
 This task runs an ephemeral docker container that will execute the provided .jip file using JIPipe.
@@ -82,7 +88,10 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
                 {"type": "bind", "source": str(temp_output), "target": temp_output},
             ],
             stdout=True,
-            stderr=True
+            stderr=True,
+            cpu_period=CPU_PERIOD,
+            cpu_quota=PER_JOB_CPU_QUOTA,
+            mem_limit=PER_JOB_MEM_LIMIT
         )
 
         # Stream the log
