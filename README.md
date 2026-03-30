@@ -34,21 +34,35 @@ Backend features include:
 
 ## License & Attribution
 
+Copyright (c) 2026 Marius Wank
+
+This project is licensed under the **MIT License**.  
+See the [license file](LICENSE.txt) for details.
+
+### Authors & Affiliation
+
 Marius Wank, Ruman Gerst, Marc Thilo Figge
 
-Research Group Applied Systems Biology - Head: Prof. Dr. Marc Thilo Figge\
-https://www.leibniz-hki.de/en/applied-systems-biology.html \
-HKI-Center for Systems Biology of Infection\
-Leibniz Institute for Natural Product Research and Infection Biology - Hans Knöll Institute (HKI)\
+Research Group Applied Systems Biology - Head: Prof. Dr. Marc Thilo Figge  
+https://www.leibniz-hki.de/en/applied-systems-biology.html  
+HKI-Center for Systems Biology of Infection  
+Leibniz Institute for Natural Product Research and Infection Biology - Hans Knöll Institute (HKI)  
 Adolf-Reichwein-Straße 23, 07745 Jena, Germany
 
-This plugin is licensed under the **Creative Commons Attribution 4.0 International License (CC BY 4.0)**.  You are free to share and adapt it with proper attribution.  
-See: [CC BY 4.0 License](https://creativecommons.org/licenses/by/4.0/)
+---
 
-### Dependencies & Third-Party Tools
+## Dependencies & Third-Party Tools
+
+This software makes use of the following third-party components:
+
 - **Tom Select** (UI select widget)  
   Licensed under the [Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0)
 
+---
 
-This plugin is designed to work with **JIPipe**, developed by **Ruman Gerst and Zoltán Csereynes**.  
-> JIPipe is **not** included in this plugin’s distribution. Please visit [jipipe.org](https://jipipe.org) for license details.
+## JIPipe Dependency Notice
+
+This plugin is designed to work with **JIPipe**, developed by **Ruman Gerst and Zoltán Csereynes**.
+
+JIPipe is **not included** in this plugin’s distribution and must be installed separately.  
+Please visit [https://jipipe.org](https://jipipe.org) for installation and licensing information.
