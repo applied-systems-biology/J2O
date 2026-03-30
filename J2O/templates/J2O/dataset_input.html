@@ -400,7 +400,7 @@
       <!-- Section: Output nodes (project IDs) -->
       <section id="output">
         <h2>Output Node Configuration</h2>
-        <p>Enter project IDs for each output node and a name for the generated dataset:</p>
+        <p>Enter project IDs for each output user directory and a name for the generated dataset:</p>
         <!-- Input fields for project IDs and dataset name will be generated here -->
       </section>
 
@@ -427,10 +427,10 @@
 
     <!--- Licensing -->
     <div style="font-size: 0.75rem; text-align: center; margin-top: 2rem;">
-      J2O by Marius Wank, licensed under 
-      <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank">CC BY 4.0</a>.<br>
+      J2O by Marius Wank, licensed under the
+      <a href="https://opensource.org/license/MIT" target="_blank">MIT license</a>.<br>
       Requires <a href="https://jipipe.hki-jena.de/" target="_blank">JIPipe</a> by Ruman Gerst and Zoltán Csereynes.<br>
-      Powered by <a href="https://tom-select.js.org/" target="_blank">Tom Select</a> licensed under Apache 2.0.
+      Powered by <a href="https://tom-select.js.org/" target="_blank">Tom Select</a> licensed under <a href="https://opensource.org/license/apache-2.0" target="_blank">Apache 2.0</a>.
     </div>
   </div>
 
@@ -1393,14 +1393,22 @@
             <script>
               const jobId = "${jobId}";
               const csrftoken = "${csrftoken}";
-              let previousLogLength = 0;
+              const LOG_LIMIT = 500; // Number of lines to fetch per request
+              let currentOffset = null; // null = use tail mode (last N lines)
+              let totalLines = 0;
               let finished = false;
+              let initialLoad = true;
 
               const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-              async function fetchLogs() {
+              async function fetchLogs(offset, limit) {
                 try {
-                  const resp = await fetch('/J2O/fetch_jipipe_logs/' + jobId + '/', { credentials: 'same-origin' });
+                  let url = '/J2O/fetch_jipipe_logs/' + jobId + '/?limit=' + limit;
+                  // Only add offset if we have a specific position (not for initial tail load)
+                  if (offset !== null) {
+                    url += '&offset=' + offset;
+                  }
+                  const resp = await fetch(url, { credentials: 'same-origin' });
                   if (!resp.ok) return null;
                   return await resp.json();
                 } catch (err) {
@@ -1412,22 +1420,40 @@
               async function updateLog() {
                 if (finished) return;
                 
-                const logData = await fetchLogs();
+                const logData = await fetchLogs(currentOffset, LOG_LIMIT);
                 if (!logData) {
                   await sleep(1000);
                   updateLog();
                   return;
                 }
 
-                const { status, logs } = logData;
+                const { status, logs, total_lines, returned_offset } = logData;
+                totalLines = total_lines;
                 
-                if (logs && logs.length > previousLogLength) {
-                  const newLines = logs.slice(previousLogLength).join('\\n');
-                  document.getElementById('logOutput').textContent += newLines + '\\n';
-                  document.getElementById('logOutput').scrollTop = document.getElementById('logOutput').scrollHeight;
-                  previousLogLength = logs.length;
+                const logOutput = document.getElementById('logOutput');
+                const isNearBottom = logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight < 100;
+                
+                if (initialLoad) {
+                  // First load: display all returned logs (tail mode - last N lines)
+                  logOutput.textContent = logs.join('\\n');
+                  logOutput.scrollTop = logOutput.scrollHeight;
+                  initialLoad = false;
+                  // After initial tail load, switch to offset-based pagination for subsequent updates
+                  currentOffset = returned_offset;
+                } else if (logs && logs.length > 0) {
+                  // Subsequent loads: append new lines
+                  const newLines = logs.join('\\n');
+                  logOutput.textContent += '\\n' + newLines;
+                  // Only auto-scroll if user is near the bottom
+                  if (isNearBottom) {
+                    logOutput.scrollTop = logOutput.scrollHeight;
+                  }
                 }
 
+                // Update current offset for next fetch
+                currentOffset = returned_offset + logs.length;
+
+                // Trim display if too large (client-side safety)
                 if (document.getElementById('logOutput').textContent.length > ${MAX_CHARS_LOG_DISPLAY}){
                   document.getElementById('logOutput').textContent = document.getElementById('logOutput').textContent.slice(-${MAX_CHARS_LOG_DISPLAY});
                 }

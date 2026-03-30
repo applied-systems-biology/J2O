@@ -305,9 +305,27 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
         if not log_file_path:
             return JsonResponse({'error': f'Error retrieving jipipe log: Log file has not been created yet'}, status=400)
 
-        # Get the log lines from the file to return them
+        # Get pagination parameters from query string
+        # offset: starting line number (default: 0 = end of file for backward compatibility)
+        # limit: max number of lines to return (default: 2000)
+        # If offset is not provided, we return the last 'limit' lines (tail mode)
+        offset = request.GET.get('offset', None)
+        limit = int(request.GET.get('limit', 2000))
+        
+        # Read all log lines
         with open(log_file_path, 'r') as file_handle:
-            log_lines = file_handle.read().splitlines()
+            all_log_lines = file_handle.read().splitlines()
+        
+        total_lines = len(all_log_lines)
+        
+        # Determine which lines to return
+        if offset is not None:
+            # Specific offset requested (forward pagination)
+            offset = int(offset)
+            log_lines = all_log_lines[offset:offset + limit]
+        else:
+            # No offset = return last 'limit' lines (tail mode - default for live streaming)
+            log_lines = all_log_lines[-limit:] if total_lines > limit else all_log_lines
         
         # Check if the job is still active by looking in the cache
         owner = conn.getUser().getName()
@@ -316,8 +334,9 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
         active_job_uuid_list = [job["job_uuid"] for job in active]
 
         # Determine if the job finished by checking the exit code message or if it is still in the active set
+        # Check the last lines of the FULL log file (not just the returned subset)
         status = (
-            'finished' if any('Run ending at' in line for line in log_lines[-10:]) or any("JIPipe container exited with code 0" in line for line in log_lines[-1:]) else
+            'finished' if any('Run ending at' in line for line in all_log_lines[-10:]) or any("JIPipe container exited with code 0" in line for line in all_log_lines[-1:]) else
             'canceled' if (job_uuid not in active_job_uuid_list) else
             'running'
         )
@@ -327,7 +346,12 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
             active = [job for job in active if job["job_uuid"] != job_uuid]
             cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-        return JsonResponse({'status': status, 'logs': log_lines})
+        return JsonResponse({
+            'status': status,
+            'logs': log_lines,
+            'total_lines': total_lines,
+            'returned_offset': total_lines - len(log_lines) if offset is None else offset
+        })
     
     except Exception as error:
         logger.exception('Failed to retrieve jipipe log: %s', error)
