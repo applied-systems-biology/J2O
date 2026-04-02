@@ -10,3 +10,5 @@ jcef-bundle
 build
 celery_worker.log
 celery_worker.pid
+.venv
+gitlab_to_github_issues.py
