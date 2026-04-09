@@ -125,6 +125,56 @@
       color: #666666;
     }
 
+    /* Warning display above Start button */
+    #jipipe_form_container #warningDisplay {
+      display: none;
+      background-color: #fff3cd;
+      border: 1px solid #ffc107;
+      border-radius: 4px;
+      color: #856404;
+      margin: 0 auto var(--space-md);
+      padding: var(--space-sm) var(--space-md);
+      text-align: center;
+      font-weight: 600;
+    }
+
+    #jipipe_form_container #warningDisplay.has-warnings {
+      display: block;
+    }
+
+    #jipipe_form_container #warningDisplay .warning-item {
+      margin-bottom: var(--space-sm);
+    }
+
+    #jipipe_form_container #warningDisplay .warning-item:last-child {
+      margin-bottom: 0;
+    }
+
+    /* Error display below Start button */
+    #jipipe_form_container #errorDisplay {
+      display: none;
+      background-color: #f8d7da;
+      border: 1px solid #f5c2c7;
+      border-radius: 4px;
+      color: #842029;
+      margin: var(--space-md) auto var(--space-lg);
+      padding: var(--space-sm) var(--space-md);
+      text-align: center;
+      font-weight: 600;
+    }
+
+    #jipipe_form_container #errorDisplay.has-errors {
+      display: block;
+    }
+
+    #jipipe_form_container #errorDisplay .error-item {
+      margin-bottom: var(--space-sm);
+    }
+
+    #jipipe_form_container #errorDisplay .error-item:last-child {
+      margin-bottom: 0;
+    }
+
     #jipipe_form_container #stopRunnerBtn {
       background-color: var(--color-stop-button);
       border: none;
@@ -412,9 +462,15 @@
       </section>
     </div>
 
+    <!-- Warning display area - shown above Start button when there are warnings -->
+    <div id="warningDisplay"></div>
+
     <div style="text-align: center; margin-bottom: 20px;">
       <button id="startRunnerBtn" disabled>Start J2O</button>
     </div>
+
+    <!-- Error display area - shown below Start button when there are errors -->
+    <div id="errorDisplay"></div>
 
     <!-- Section: Job output logs -->
     <section id="results">
@@ -584,7 +640,7 @@
             const { error, trace } = responseJSON ?? {};
             const details = trace ? `${error}\n${trace}` : error;
             console.error(`Error stopping job ${jobId}: ${details}`);
-            manually_write_to_log_window(`Error stopping job ${jobId}: ${error}\n`);
+            displayErrorBelowStartButton(`Error stopping job ${jobId}: ${error}\n`)
             return;
           }
           // If the request was successful, display message in the log output
@@ -647,7 +703,7 @@
         
         if (!response.ok) {
           console.error(`Error ${response.status}: ${responseJSON.error}\n${responseJSON.trace}`);
-          manually_write_to_log_window(`Error ${response.status}: ${responseJSON.error}\n`);
+          displayErrorBelowStartButton(`Error ${response.status}: ${responseJSON.error}\n`)
           return null;
         }
         return responseJSON;
@@ -738,22 +794,22 @@
           if (jip_file_major_version === 6 && jip_file_name.endsWith(".zip")){
             file_items.push({ value: "Original data", name: "Use original data" });
           }
-
           // Iterate over user directories and create input fields for them
           userDirectories.forEach(user_dir_dict => {
 
             // Get key name for user dir
-            const key_name = user_dir_dict.parameters.key.value;
-            if (!key_name.includes("input")) return;
+            const user_dir_key_value = user_dir_dict.parameters.key.value;
+            const user_dir_name = user_dir_dict?.parameters?.name?.value ?? "";
+            if (!user_dir_name.toLowerCase().includes("input")) return;
 
             addTomSelectElementToUI({
               container,
-              id: key_name,
-              labelText: `User directory: ${key_name}`,
+              id: user_dir_key_value,
+              labelText: `User directory: ${user_dir_key_value}`,
               items: dataset_items.map(x => ({ ...x })), // Deep copy required to avoid TomSelect shared-object weirdness
               placeholder: null,
               overrideMap: jip_file_user_directory_overrides,
-              overrideKey: key_name,
+              overrideKey: user_dir_key_value,
               section: "I/O",
               allowMultipleSelections: true,
             });
@@ -956,18 +1012,19 @@
           userDirectories.forEach(user_dir_dict => {
 
             // Get the user directory name, skip entry if user_dir is not defined as output
-            const key_name = user_dir_dict.parameters.key.value;
-            if (!key_name.includes("output")) return;
+            const user_dir_key_value = user_dir_dict.parameters.key.value;
+            const user_dir_name = user_dir_dict?.parameters?.name?.value ?? "";
+            if (!user_dir_name.toLowerCase().includes("output")) return;
 
             // add the TomSelect element to DOM
             const { row, select_element } = addTomSelectElementToUI({
               container,
-              id: key_name,
-              labelText: `User directory: ${key_name}`,
+              id: user_dir_key_value,
+              labelText: `User directory: ${user_dir_key_value}`,
               items: project_items.map(x => ({ ...x })), // avoid TomSelect shared-object weirdness
               placeholder: NO_PROJECT_INPUT_VALUE,
               overrideMap: jip_file_user_directory_overrides,
-              overrideKey: key_name,
+              overrideKey: user_dir_key_value,
               section: "I/O",
               allowMultipleSelections: false,
             });
@@ -978,7 +1035,7 @@
             // add dataset-name input to the SAME row element in DOM
             addTextInputToRow({
               row,
-              id: `${key_name}/dataset-name`,
+              id: `${user_dir_key_value}/dataset-name`,
               labelText: "Output dataset name:",
               placeholder: `${jip_file_name}`,
             });
@@ -1084,6 +1141,9 @@
           // Print content to console for checking correctness!
           console.log("JIPipe parameter override input: ", job_parameter_override);
           
+          // Get user directories from jip_file_content to access the name field
+          const userDirectories = jip_file_content?.metadata?.["user-directories"]?.["user-directories"]?.items ?? [];
+          
           // Iterate the user_directory_override dict to change the values according to user input
           for (const [key, _] of Object.entries(stale_job_user_directory_override_copy)) {
             
@@ -1100,9 +1160,13 @@
               continue;
             }
             else{
-              // Set destination dir depending on user dir key (input or output)
+              // Get the name from user directories to determine if it's input or output
+              const userDir = userDirectories.find(ud => ud?.parameters?.key?.value === key);
+              const dirName = userDir?.parameters?.name?.value ?? "";
+              
+              // Set destination dir depending on user dir name (input or output)
               let destination_directory = global_variable_snapshot.temp_input;
-              if (key.includes("output")){
+              if (dirName.toLowerCase().includes("output")){
                 destination_directory = global_variable_snapshot.temp_output;
                 uuid_to_project_id_map[key] = inputValue;
               }
@@ -1112,7 +1176,7 @@
               await create_temp_subdirectories(destination_directory, key);
 
               // Only put input data from OMERO in temp folder if user dir is marked as input
-              if (key.includes("input")){
+              if (dirName.toLowerCase().includes("input")){
                 const responseJSON = await saveInputToServer(destination_path, inputValue, "folder-paths"); // Input user directories are handled like folder with a subfolder for each dataset
                 console.log("Input object info: ", responseJSON)
               }
@@ -1197,6 +1261,9 @@
       */
       async function executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot) {
 
+        // Initial message
+        manually_write_to_log_window(`Starting new task with JIPipe version ${global_variable_snapshot.jip_file_major_version}...\n\nFetching logs...\n`);
+
         // Send a request to the server to start the job
         const response = await fetch('/J2O/jipipe_start_job/', {
           method: 'POST',
@@ -1216,8 +1283,31 @@
           })
         });
 
-        // Save response
-        const responseJSON = await response.json();
+        // Save response - handle both JSON and non-JSON responses
+        // First read as text to avoid "Body has already been consumed" error
+        const rawResponse = await response.text();
+        let responseJSON = null;
+        
+        try {
+          responseJSON = JSON.parse(rawResponse);
+        } catch (parseError) {
+          console.error('Failed to parse server response as JSON', {
+            status: response.status,
+            statusText: response.statusText,
+            contentType: response.headers.get('content-type'),
+            rawResponse: rawResponse.slice(0, 500)
+          });
+          
+          // Provide a more helpful error message
+          if (!response.ok) {
+            // Server returned an error - try to extract any error message from the response
+            const errorDetail = rawResponse ? rawResponse.slice(0, 20000) : response.statusText;
+            throw new Error(`Server error (${response.status}): Failed to start JIPipe task. The server returned an error response: "${errorDetail}". Check the OMERO web server logs for details.`);
+          } else {
+            // Response was OK but couldn't be parsed as JSON (unexpected)
+            throw new Error(`Unexpected response from server: Expected JSON but got non-JSON response (content-type: ${response.headers.get('content-type')}). Raw response: ${rawResponse.slice(0, 20000)}. Check the OMERO web server logs for details.`);
+          }
+        }
 
         // If the response is not okay, output an error message to the log window and don't add the job or log to the UI
         if (!response.ok) {
@@ -1273,7 +1363,7 @@
               if (!resp.ok) {
                   const errorJSON = await resp.json();
                   console.error(`Error ${resp.status}: ${errorJSON.error}\n${errorJSON.trace}`);
-                  manually_write_to_log_window(`${errorJSON.error}: Aborting log stream!\n`);
+                  displayErrorBelowStartButton(`${errorJSON.error}: Aborting log stream!\n`)
                   return null;
               }
               return await resp.json();
@@ -1292,9 +1382,6 @@
           };
 
           try {
-              // Initial message
-              manually_write_to_log_window(`Starting new task with JIPipe version ${global_variable_snapshot.jip_file_major_version}...\n\nFetching logs...\n`);
-
               // Continue updating the log window until finished
               while (!finished) {
 
@@ -1337,7 +1424,7 @@
           } catch (err) {
               console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream & task!`);
               if (latest_job_id === jobId) {
-                  manually_write_to_log_window(`${err.name} while trying to update log window: ${err.message}\nAborting log stream & task!\n`);
+                displayErrorBelowStartButton(`${err.name} while trying to update log window: ${err.message}\nAborting log stream & task!\n`);
               }
               stopPipelineJob(jobId);
           } finally {
@@ -1695,11 +1782,22 @@
       /**
        * Writes the given message to the log window and does the sticky scrollbar check.
        * @param {string} message - The message to be written to the log window
-      */
-      function manually_write_to_log_window(message){
+       * @param {string} [color] - Optional CSS color value (e.g., 'red', '#ff0000', 'rgb(255,0,0)')
+       */
+      function manually_write_to_log_window(message, color = null){
         const logContainer = logOutput.parentElement; // Log window DOM element
         let isAtBottom = logContainer.scrollTop + logContainer.clientHeight >= logContainer.scrollHeight - 1;
-        logOutput.textContent += message;
+        
+        // Wrap message in a span with optional color styling
+        if (color) {
+          const span = document.createElement('span');
+          span.style.color = color;
+          span.textContent = message;
+          logOutput.appendChild(span);
+        } else {
+          logOutput.textContent += message;
+        }
+        
         if (isAtBottom) {
           logContainer.scrollTop = logContainer.scrollHeight;
         }
@@ -1709,6 +1807,52 @@
         }
       }
       
+      /**
+       * Displays a warning message above the Start button.
+       * Warnings are shown prominently so users see them before running a job.
+       * @param {string} message - The warning message to display
+       */
+      function displayWarningAboveStartButton(message) {
+        const warningDisplay = document.getElementById('warningDisplay');
+        const warningItem = document.createElement('div');
+        warningItem.className = 'warning-item';
+        warningItem.textContent = message;
+        warningDisplay.appendChild(warningItem);
+        warningDisplay.classList.add('has-warnings');
+      }
+
+      /**
+       * Clears all warnings displayed above the Start button.
+       */
+      function clearWarningsAboveStartButton() {
+        const warningDisplay = document.getElementById('warningDisplay');
+        warningDisplay.innerHTML = '';
+        warningDisplay.classList.remove('has-warnings');
+      }
+
+      /**
+       * Displays an error message below the Start button.
+       * Errors are shown prominently in red so users see them before running a job.
+       * @param {string} message - The error message to display
+       */
+      function displayErrorBelowStartButton(message) {
+        const errorDisplay = document.getElementById('errorDisplay');
+        const errorItem = document.createElement('div');
+        errorItem.className = 'error-item';
+        errorItem.textContent = message;
+        errorDisplay.appendChild(errorItem);
+        errorDisplay.classList.add('has-errors');
+      }
+
+      /**
+       * Clears all errors displayed below the Start button.
+       */
+      function clearErrorsBelowStartButton() {
+        const errorDisplay = document.getElementById('errorDisplay');
+        errorDisplay.innerHTML = '';
+        errorDisplay.classList.remove('has-errors');
+      }
+
       /**
        * Creates a labeled <select> element, registers its default value in the given override map,
        * appends it to the provided container, and transforms it into a TomSelect field.
@@ -1919,17 +2063,40 @@
                 const nodesMap = jip_file_content.graph.nodes;
                 const userDirectories = jip_file_content?.metadata?.["user-directories"]?.["user-directories"]?.items ?? [];
                 
-                // Validate user directories: warn if key contains neither input nor output, or both
+                // Clear any existing warnings from previous .jip file selections
+                clearWarningsAboveStartButton();
+
+                // Clear any previous errors displayed below the button
+                clearErrorsBelowStartButton();
+                
+                // Validate user directories: warn if key contains neither input nor output, or both.
+                let output_dir_count = 0;
                 userDirectories.forEach(userDir => {
-                    const key = userDir?.parameters?.key?.value ?? "unknown";
-                    const keyLower = key.toLowerCase();
-                    const hasNeitherInputOrOutput = !keyLower.includes("input") && !keyLower.includes("output");
-                    const hasBothInputAndOutput = keyLower.includes("input") && keyLower.includes("output");
+                    const user_dir_name = userDir?.parameters?.name?.value ?? "";
+                    const user_dir_key_value = userDir?.parameters?.key?.value ?? "";
+                    const user_dir_nameLower = user_dir_name.toLowerCase();
+                    const hasNeitherInputOrOutput = !user_dir_nameLower.includes("input") && !user_dir_nameLower.includes("output");
+                    const hasBothInputAndOutput = user_dir_nameLower.includes("input") && user_dir_nameLower.includes("output");
                     
                     if (hasBothInputAndOutput || hasNeitherInputOrOutput) {
-                        manually_write_to_log_window(`WARNING: User directory "${key}" does not adhere to naming convention. This may crash your workflow!\n`);
+                        let warningMsg = `User directory "${user_dir_name}" does not adhere to naming convention. This may crash your workflow!`;
+
+                        if (user_dir_name === ""){
+                          warningMsg = `User directory with key "${user_dir_key_value}" does not have a name. This may crash your workflow!`;
+                        }
+                        displayWarningAboveStartButton(warningMsg);
+                    }
+
+                    if (user_dir_nameLower.includes("output")){
+                      output_dir_count += 1;
                     }
                 });
+
+                // Also warn if no output dir is given.
+                if (output_dir_count === 0){
+                  const warningMsg = 'No output user directory was defined according to convention. Your processed data will not be saved to OMERO!';
+                  displayWarningAboveStartButton(warningMsg);
+                }
 
                 const {inputCount, outputCount } = displayNodeSummary(nodesMap, tempFileInfo);
                 await createDatasetInputFields(nodesMap, userDirectories, tempInput);
@@ -1959,12 +2126,14 @@
                 startRunnerBtn.disabled = true;
                 infoSection.innerHTML = originalInfoState;
                 infoSection.style.display = "none";
+                clearWarningsAboveStartButton();
               }
             // If no .jip file is selected, reset the info sections to their original empty state
             } else {
               startRunnerBtn.disabled = true;
               infoSection.innerHTML = originalInfoState;
               infoSection.style.display = "none";
+              clearWarningsAboveStartButton();
             }
           });
         
@@ -1980,6 +2149,9 @@
 
         // EventListener: On click of the start button, execute the pipeline job
         document.getElementById('startRunnerBtn').addEventListener('click', async (event) => {
+
+          // Clear any previous errors displayed below the button
+          clearErrorsBelowStartButton();
 
           // Measure runtime
           console.time();
@@ -2039,8 +2211,9 @@
           // Catch errors and display a useful message to the user depending on the caught error
           }catch(err){
             console.error(`${err.name}: ${err.message}`)
-            manually_write_to_log_window(`\nError(s): ${err.message}\nStopping the task.\n\n`);
-            loadRunningJobs()              
+            // Display error below the Start button (in red) instead of writing to log window
+            displayErrorBelowStartButton(`\nError(s): ${err.message}\nStopping the task.\n\n`);
+            loadRunningJobs()
           }
 
           // Always clean filesystem if temporary directories were created
@@ -2054,7 +2227,7 @@
                   ]);
                 } catch (e) {
                   console.error('Cleanup error:', e);
-                  manually_write_to_log_window(`Cleanup error: ${e.message}\n`);
+                  displayErrorBelowStartButton(`Cleanup error: ${e.message}\n`)
                 }
               }
               manually_write_to_log_window('J2O finished!\n\n');
