@@ -109,7 +109,7 @@
       display: block;
       font-size: 0.9rem;
       font-weight: 600;
-      margin: 0 auto var(--space-lg);
+      margin: 0 auto var(--space-md);
       padding: var(--space-sm) var(--space-md);
       text-align: center;
     }
@@ -157,7 +157,7 @@
       border: 1px solid #f5c2c7;
       border-radius: 4px;
       color: #842029;
-      margin: var(--space-md) auto var(--space-lg);
+      margin: var(--space-md) auto var(--space-md);
       padding: var(--space-sm) var(--space-md);
       text-align: center;
       font-weight: 600;
@@ -465,7 +465,7 @@
     <!-- Warning display area - shown above Start button when there are warnings -->
     <div id="warningDisplay"></div>
 
-    <div style="text-align: center; margin-bottom: 20px;">
+    <div style="text-align: center; margin-bottom: 12px;">
       <button id="startRunnerBtn" disabled>Start J2O</button>
     </div>
 
@@ -1333,12 +1333,14 @@
       async function updateLogWindow(jobId, global_variable_snapshot) {
           // Variables for status checks
           let finished = false;
-          let previousLogLength = 0;
+          let currentOffset = null; // null = use tail mode (last N lines) for initial load
           let latest_job_id = jobId;
           let latest_job_name = null;
           let latest_job_start_time = null;
           let status = null;
           let logs = null;
+          let initialLoad = true;
+          const LOG_LIMIT = 500; // Number of lines to fetch per request
 
           // Wait for a given amount of ms
           const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -1369,9 +1371,14 @@
               return await resp.json();
           };
 
-          // Fetch logs for a specific job
-          const fetchLogs = async (jobId) => {
-              const logResp = await fetch(`/J2O/fetch_jipipe_logs/${jobId}/`, { credentials: 'same-origin' });
+          // Fetch logs for a specific job with offset-based pagination
+          const fetchLogs = async (jobId, offset, limit) => {
+              let url = `/J2O/fetch_jipipe_logs/${jobId}/?limit=${limit}`;
+              // Only add offset if we have a specific position (not for initial tail load)
+              if (offset !== null) {
+                  url += `&offset=${offset}`;
+              }
+              const logResp = await fetch(url, { credentials: 'same-origin' });
 
               // Retry if logs are not ready
               if (!logResp.ok || logResp.status === 204) {
@@ -1397,8 +1404,8 @@
                       latest_job_start_time = fetched_job_start_time;
                   }
 
-                  // Fetch logs for the current job
-                  const logData = await fetchLogs(jobId);
+                  // Fetch logs for the current job with offset-based pagination
+                  const logData = await fetchLogs(jobId, currentOffset, LOG_LIMIT);
                   if (!logData) throw ReferenceError("Log file was not found. Check that your admin selected a writable directory for logs!");
 
                   ({ status, logs } = logData);
@@ -1408,18 +1415,37 @@
                     continue;
                   }
 
-                  // Update log output if new logs appeared
-                  if (logs.length > previousLogLength && latest_job_id === jobId) {
-                      const newLines = logs.slice(previousLogLength).join('\n');
-                      appendLogs(newLines);
-                      previousLogLength = logs.length;
+                  // Debug: log key variables
+                  console.log(`[updateLogWindow] jobId=${jobId}, latest_job_id=${latest_job_id}, currentOffset=${currentOffset}, logs.length=${logs?.length}, total_lines=${logData.total_lines}, status=${status}`);
+
+                  // Update log output using offset-based approach (same as pop-up window)
+                  if (latest_job_id === jobId) {
+                      if (initialLoad) {
+                          // First load: display all returned logs (tail mode - last N lines)
+                          const allLines = logs.join('\n');
+                          appendLogs(allLines);
+                          initialLoad = false;
+                          // After initial tail load, switch to offset-based pagination for subsequent updates
+                          // Set offset to position after the last returned line
+                          currentOffset = logData.returned_offset + (logs ? logs.length : 0);
+                      } else if (logs && logs.length > 0) {
+                          // Subsequent loads: append new lines
+                          const newLines = logs.join('\n');
+                          appendLogs(newLines);
+                          // Update current offset for next fetch
+                          currentOffset = logData.returned_offset + logs.length;
+                      }
+                      // If logs.length === 0, no new logs, keep current offset unchanged for next poll
                   }
 
                   // Check if job is finished
                   finished = (status != "running");
 
-                  // Wait before sending new fetch requests to the server
-                  await sleep(latest_job_id !== jobId ? 5000 : 1000);
+                  // Only sleep if no new lines were returned (log is idle)
+                  // If new lines were returned, fetch immediately to keep up with fast-growing logs
+                  if (!logs || logs.length === 0) {
+                      await sleep(latest_job_id !== jobId ? 5000 : 1000);
+                  }
               }
           } catch (err) {
               console.error(`${err.name} while trying to update log window: ${err.message}\nAborting log stream & task!`);
@@ -1443,8 +1469,15 @@
        * @param {string} startTime - The start time of the job
        */
       function openLogWindowForJob(jobId, jobName, startTime) {
+        // Close any existing popup window for this job to ensure fresh state
+        const windowName = `_log_${jobId}`;
+        const existingWindow = window.open('', windowName);
+        if (existingWindow && !existingWindow.closed) {
+          existingWindow.close();
+        }
+        
         // Create a new window/tab for the log stream
-        const logWindow = window.open('', `_log_${jobId}`, 'width=800,height=600,resizable=yes,scrollbars=yes');
+        const logWindow = window.open('', windowName, 'width=800,height=600,resizable=yes,scrollbars=yes');
         
         if (!logWindow) {
           alert('Please allow popups to view the log window.');
@@ -1526,7 +1559,8 @@
                   logOutput.scrollTop = logOutput.scrollHeight;
                   initialLoad = false;
                   // After initial tail load, switch to offset-based pagination for subsequent updates
-                  currentOffset = returned_offset;
+                  // Set offset to position after the last returned line
+                  currentOffset = returned_offset + (logs ? logs.length : 0);
                 } else if (logs && logs.length > 0) {
                   // Subsequent loads: append new lines
                   const newLines = logs.join('\\n');
@@ -1535,10 +1569,11 @@
                   if (isNearBottom) {
                     logOutput.scrollTop = logOutput.scrollHeight;
                   }
+                  // Update current offset for next fetch (only in append mode)
+                  currentOffset = returned_offset + logs.length;
+                } else if (logs && logs.length === 0) {
+                  // No new logs, keep current offset unchanged for next poll
                 }
-
-                // Update current offset for next fetch
-                currentOffset = returned_offset + logs.length;
 
                 // Trim display if too large (client-side safety)
                 if (document.getElementById('logOutput').textContent.length > ${MAX_CHARS_LOG_DISPLAY}){
@@ -1561,7 +1596,7 @@
                 }
 
                 if (!finished) {
-                  await sleep(1000);
+                  // await sleep(1000);
                   updateLog();
                 }
               }
@@ -2041,6 +2076,12 @@
             const buffer_div = document.getElementById("buffer_div");
             const startRunnerBtn= document.getElementById('startRunnerBtn');
 
+            // Clear any existing warnings from previous .jip file selections
+            clearWarningsAboveStartButton();
+
+            // Clear any previous errors displayed below the button
+            clearErrorsBelowStartButton();
+
             // If a .jip file is selected, fetch its content and update the UI
             if (selectedJipFileID) {
               // Fetch the .jip file content and only execute the rest if it exists
@@ -2062,12 +2103,6 @@
                 // Read the node graph from the .jip file and use it to dynamically fill the UI
                 const nodesMap = jip_file_content.graph.nodes;
                 const userDirectories = jip_file_content?.metadata?.["user-directories"]?.["user-directories"]?.items ?? [];
-                
-                // Clear any existing warnings from previous .jip file selections
-                clearWarningsAboveStartButton();
-
-                // Clear any previous errors displayed below the button
-                clearErrorsBelowStartButton();
                 
                 // Validate user directories: warn if key contains neither input nor output, or both.
                 let output_dir_count = 0;
