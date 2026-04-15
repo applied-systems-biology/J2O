@@ -51,9 +51,12 @@ def j2o_index(request, conn=None, **kwargs) -> HttpResponse:
     """
     Display the J2O HTML.
     """
+    # GPU is available if a static GPU device is configured (GPU_DEVICES is non-empty).
+    gpu_available = bool(settings.GPU_DEVICES.strip())
     return render(
         request,
-        'J2O/dataset_input.html'
+        'J2O/dataset_input.html',
+        {'gpu_available': gpu_available}
     )
 
 @require_POST
@@ -88,6 +91,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         temp_input = json_request.get('input_path')
         temp_output = json_request.get('output_path')
         jip_file_id = json_request.get('jip_file_id')
+        requires_gpu = json_request.get('requires_gpu', False)
 
         # Server-side fetch of JIPipe file content from OMERO (avoids large request body)
         jip_file = conn.getObject('originalfile', jip_file_id)
@@ -163,7 +167,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
         run_jipipe_ephemeral.apply_async(
-            args=[jipipe_json, parameter_override_json, user_directory_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output],
+            args=[jipipe_json, parameter_override_json, user_directory_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output, requires_gpu],
             task_id=job_uuid,
             ignore_result=True,
         )
@@ -335,7 +339,10 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
 
         # Determine if the job finished by checking the exit code message or if it is still in the active set
         # Check the last lines of the FULL log file (not just the returned subset)
+        # [J2O_ERROR] marker is written by tasks.py for errors that should be surfaced to the user
+        error_line = next((line for line in all_log_lines if line.startswith("[J2O_ERROR]")), None)
         status = (
+            'error' if error_line else
             'finished' if any('Run ending at' in line for line in all_log_lines[-10:]) or any("JIPipe container exited with code 0" in line for line in all_log_lines[-1:]) else
             'canceled' if (job_uuid not in active_job_uuid_list) else
             'running'
@@ -346,12 +353,16 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
             active = [job for job in active if job["job_uuid"] != job_uuid]
             cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
-        return JsonResponse({
+        response_data = {
             'status': status,
             'logs': log_lines,
             'total_lines': total_lines,
             'returned_offset': total_lines - len(log_lines) if offset is None else offset
-        })
+        }
+        # Include the error message if status is 'error' so the frontend can display it
+        if status == 'error' and error_line:
+            response_data['error_message'] = error_line.replace("[J2O_ERROR] ", "", 1)
+        return JsonResponse(response_data)
     
     except Exception as error:
         logger.exception('Failed to retrieve jipipe log: %s', error)

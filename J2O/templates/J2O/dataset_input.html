@@ -467,6 +467,12 @@
 
     <div style="text-align: center; margin-bottom: 12px;">
       <button id="startRunnerBtn" disabled>Start J2O</button>
+      {% if gpu_available %}
+      <label style="display: inline-flex; align-items: center; gap: 6px; margin-bottom: 8px; cursor: pointer; font-size: var(--font-size-label);">
+        <input type="checkbox" id="requiresGpuCheckbox" style="cursor: pointer;">
+        Use GPU acceleration
+      </label>
+      {% endif %}
     </div>
 
     <!-- Error display area - shown below Start button when there are errors -->
@@ -1259,7 +1265,7 @@
       * @param {dict} job_parameter_override - The parameter_overwrite dict that will be passed to JIPipe.
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       */
-      async function executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot) {
+      async function executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu) {
 
         // Initial message
         manually_write_to_log_window(`Starting new task with JIPipe version ${global_variable_snapshot.jip_file_major_version}...\n\nFetching logs...\n`);
@@ -1279,7 +1285,8 @@
             major_version: global_variable_snapshot.jip_file_major_version,
             input_path: global_variable_snapshot.temp_input,
             output_path: global_variable_snapshot.temp_output,
-            jip_file_id: global_variable_snapshot.selectedJipFileID
+            jip_file_id: global_variable_snapshot.selectedJipFileID,
+            requires_gpu: requires_gpu
           })
         });
 
@@ -1446,6 +1453,11 @@
                   // Check if job is finished
                   finished = (status != "running");
 
+                  // If the backend reported an error, display it in the red error box
+                  if (status === "error" && logData.error_message) {
+                      displayErrorBelowStartButton(`\n${logData.error_message}\nStopping the task.\n\n`);
+                  }
+
                   // Only sleep if no new lines were returned (log is idle)
                   // If new lines were returned, fetch immediately to keep up with fast-growing logs
                   if (!logs || logs.length === 0) {
@@ -1507,6 +1519,7 @@
               .running { background: #e3f2fd; color: #1565c0; }
               .finished { background: #e8f5e9; color: #2e7d32; }
               .canceled { background: #ffebee; color: #c62828; }
+              .error { background: #ffebee; color: #c62828; }
               h2 { margin-top: 0; }
             </style>
           </head>
@@ -1606,6 +1619,10 @@
                 } else if (status === 'finished') {
                   statusEl.className = 'status finished';
                   statusEl.textContent = 'Status: Finished';
+                  finished = true;
+                } else if (status === 'error') {
+                  statusEl.className = 'status error';
+                  statusEl.textContent = 'Status: Error';
                   finished = true;
                 } else if (status === 'canceled') {
                   statusEl.className = 'status canceled';
@@ -2254,8 +2271,12 @@
             // Create the parameter override containing user input to be provided to JIPipe
             let { job_parameter_override, job_user_directory_override, uuid_to_project_id_map } = await createJobPipelineOverride(global_variable_snapshot);
 
+            // Read GPU requirement from checkbox (may not exist if GPU is not available)
+            const gpuCheckbox = document.getElementById('requiresGpuCheckbox');
+            const requires_gpu = gpuCheckbox ? gpuCheckbox.checked : false;
+
             // Execute JIPipe and facilitate the log window livestream
-            const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot);
+            const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu);
             loadRunningJobs();
 
             // save the output (and the logfile, even when no output is generated)
