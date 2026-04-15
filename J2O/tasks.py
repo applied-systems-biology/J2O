@@ -10,6 +10,7 @@ import time
 CPU_PERIOD = settings.CPU_PERIOD
 PER_JOB_CPU_QUOTA = settings.PER_JOB_CPU_QUOTA
 PER_JOB_MEM_LIMIT = settings.PER_JOB_MEM_LIMIT
+GPU_DEVICES = settings.GPU_DEVICES
 
 """
 This task runs an ephemeral docker container that will execute the provided .jip file using JIPipe.
@@ -77,6 +78,9 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         if jipipe_version >= 4:
              command.append("--fast-init")
 
+        # Build device list from GPU_DEVICES setting (comma-separated CDI names or device paths)
+        device_list = [d.strip() for d in GPU_DEVICES.split(",") if d.strip()] if GPU_DEVICES else []
+
         container = client.containers.run(
             image,
             command=command,
@@ -87,6 +91,7 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
                 {"type": "bind", "source": str(temp_input),  "target": temp_input},
                 {"type": "bind", "source": str(temp_output), "target": temp_output},
             ],
+            devices=device_list,
             stdout=True,
             stderr=True,
             cpu_period=CPU_PERIOD,

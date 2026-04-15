@@ -38,5 +38,11 @@ CPU_PERIOD = get_omero_config("omero.web.jipipe.cpu_period", 100000)
 PER_JOB_CPU_QUOTA = get_omero_config("omero.web.jipipe.cpu_quota", 200000)
 PER_JOB_MEM_LIMIT = get_omero_config("omero.web.jipipe.mem_limit", "8g")
 
+# GPU device passthrough for container runs.
+# Comma-separated list of CDI device names (e.g. "nvidia.com/gpu=all") or
+# host device paths (e.g. "/dev/nvidia0:/dev/nvidia0:rw").
+# Set to empty string to disable GPU passthrough.
+GPU_DEVICES = get_omero_config("omero.web.jipipe.gpu_devices", "nvidia.com/gpu=all")
+
 os.makedirs(J2O_LOG_DIR, exist_ok=True)
 os.makedirs(J2O_TEMP_DIR, exist_ok=True)
