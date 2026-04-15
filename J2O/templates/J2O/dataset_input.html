@@ -1340,7 +1340,7 @@
           let status = null;
           let logs = null;
           let initialLoad = true;
-          const LOG_LIMIT = 500; // Number of lines to fetch per request
+          const LOG_LIMIT = 200; // Number of lines to fetch per request
 
           // Wait for a given amount of ms
           const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -1420,7 +1420,12 @@
 
                   // Update log output using offset-based approach (same as pop-up window)
                   if (latest_job_id === jobId) {
-                      if (initialLoad) {
+                      if (!initialLoad && logData.total_lines > currentOffset + LOG_LIMIT * 3) {
+                          // Falling behind: skip lines to show live progress instead of lagging
+                          const skippedLines = logData.total_lines - currentOffset;
+                          appendLogs(`\n... [skipped ${skippedLines} lines to show live progress] ...\n`);
+                          currentOffset = logData.total_lines;
+                      } else if (initialLoad) {
                           // First load: display all returned logs (tail mode - last N lines)
                           const allLines = logs.join('\n');
                           appendLogs(allLines);
@@ -1513,7 +1518,7 @@
             <script>
               const jobId = "${jobId}";
               const csrftoken = "${csrftoken}";
-              const LOG_LIMIT = 500; // Number of lines to fetch per request
+              const LOG_LIMIT = 200; // Number of lines to fetch per request
               let currentOffset = null; // null = use tail mode (last N lines)
               let totalLines = 0;
               let finished = false;
@@ -1553,7 +1558,15 @@
                 const logOutput = document.getElementById('logOutput');
                 const isNearBottom = logOutput.scrollHeight - logOutput.scrollTop - logOutput.clientHeight < 100;
                 
-                if (initialLoad) {
+                if (!initialLoad && total_lines > currentOffset + LOG_LIMIT * 3) {
+                  // Falling behind: skip lines to show live progress instead of lagging
+                  const skippedLines = total_lines - currentOffset;
+                  logOutput.appendChild(document.createTextNode('\\n... [skipped ' + skippedLines + ' lines to show live progress] ...\\n'));
+                  if (isNearBottom) {
+                    logOutput.scrollTop = logOutput.scrollHeight;
+                  }
+                  currentOffset = total_lines;
+                } else if (initialLoad) {
                   // First load: display all returned logs (tail mode - last N lines)
                   logOutput.textContent = logs.join('\\n');
                   logOutput.scrollTop = logOutput.scrollHeight;
@@ -1562,9 +1575,9 @@
                   // Set offset to position after the last returned line
                   currentOffset = returned_offset + (logs ? logs.length : 0);
                 } else if (logs && logs.length > 0) {
-                  // Subsequent loads: append new lines
+                  // Subsequent loads: append new lines using appendChild for better performance
                   const newLines = logs.join('\\n');
-                  logOutput.textContent += '\\n' + newLines;
+                  logOutput.appendChild(document.createTextNode('\\n' + newLines));
                   // Only auto-scroll if user is near the bottom
                   if (isNearBottom) {
                     logOutput.scrollTop = logOutput.scrollHeight;
@@ -1576,8 +1589,13 @@
                 }
 
                 // Trim display if too large (client-side safety)
-                if (document.getElementById('logOutput').textContent.length > ${MAX_CHARS_LOG_DISPLAY}){
-                  document.getElementById('logOutput').textContent = document.getElementById('logOutput').textContent.slice(-${MAX_CHARS_LOG_DISPLAY});
+                if (logOutput.textContent.length > ${MAX_CHARS_LOG_DISPLAY}){
+                  while (logOutput.childNodes.length > 1 && logOutput.textContent.length > ${MAX_CHARS_LOG_DISPLAY}) {
+                    logOutput.removeChild(logOutput.firstChild);
+                  }
+                  if (logOutput.textContent.length > ${MAX_CHARS_LOG_DISPLAY}) {
+                    logOutput.textContent = logOutput.textContent.slice(-${MAX_CHARS_LOG_DISPLAY});
+                  }
                 }
 
                 // Update status display
@@ -1830,15 +1848,25 @@
           span.textContent = message;
           logOutput.appendChild(span);
         } else {
-          logOutput.textContent += message;
+          // Use appendChild instead of textContent += for much better performance
+          // with large log outputs (avoids re-serializing the entire content)
+          logOutput.appendChild(document.createTextNode(message));
         }
         
         if (isAtBottom) {
           logContainer.scrollTop = logContainer.scrollHeight;
         }
         
+        // Trim old content when it exceeds the display limit
         if (logOutput.textContent.length > MAX_CHARS_LOG_DISPLAY){
-          logOutput.textContent = logOutput.textContent.slice(-MAX_CHARS_LOG_DISPLAY);
+          // Remove child nodes from the beginning until under the limit
+          while (logOutput.childNodes.length > 1 && logOutput.textContent.length > MAX_CHARS_LOG_DISPLAY) {
+            logOutput.removeChild(logOutput.firstChild);
+          }
+          // If a single node is still too large, truncate it
+          if (logOutput.textContent.length > MAX_CHARS_LOG_DISPLAY) {
+            logOutput.textContent = logOutput.textContent.slice(-MAX_CHARS_LOG_DISPLAY);
+          }
         }
       }
       
