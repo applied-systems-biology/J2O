@@ -13,6 +13,7 @@ PER_JOB_MEM_LIMIT = settings.PER_JOB_MEM_LIMIT
 GPU_DEVICES = settings.GPU_DEVICES
 GPU_COUNT = settings.GPU_COUNT
 GPU_RESERVATION_TTL = int(settings.GPU_RESERVATION_TTL) if settings.GPU_RESERVATION_TTL != None else settings.GPU_RESERVATION_TTL
+JIPIPE_ARTIFACTS_DIR = settings.JIPIPE_ARTIFACTS_DIR
 
 
 class GPUReservationError(RuntimeError):
@@ -89,6 +90,26 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
     reserved_gpu = None  # track GPU index for cleanup
 
     try:
+        # Pre-flight: ensure artifacts directory exists and is writable
+        artifacts_path = Path(JIPIPE_ARTIFACTS_DIR)
+        if not artifacts_path.is_dir():
+            try:
+                artifacts_path.mkdir(parents=True, exist_ok=True)
+            except PermissionError:
+                raise RuntimeError(
+                    f"JIPipe artifacts directory '{JIPIPE_ARTIFACTS_DIR}' does not exist "
+                    f"and cannot be created by the current user (permission denied). "
+                    f"Please ask your system administrator to run: "
+                    f"sudo mkdir -p {JIPIPE_ARTIFACTS_DIR} && "
+                    f"sudo chown -R $(whoami) {JIPIPE_ARTIFACTS_DIR}"
+                )
+        if not os.access(JIPIPE_ARTIFACTS_DIR, os.W_OK):
+            raise RuntimeError(
+                f"JIPipe artifacts directory '{JIPIPE_ARTIFACTS_DIR}' is not writable. "
+                f"Please ask your system administrator to run: "
+                f"sudo chown -R $(whoami) {JIPIPE_ARTIFACTS_DIR}"
+            )
+
         # Client for Podman (use CONTAINER_HOST, or fall back to the default rootless socket)
         base_url = os.environ.get("CONTAINER_HOST") or f"unix:///run/user/{os.getuid()}/podman/podman.sock"
         client = podman.PodmanClient(base_url=base_url)  # Podman REST API client
@@ -171,6 +192,7 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             mounts=[
                 {"type": "bind", "source": str(temp_input),  "target": temp_input},
                 {"type": "bind", "source": str(temp_output), "target": temp_output},
+                {"type": "bind", "source": JIPIPE_ARTIFACTS_DIR, "target": "/root/.local/share/JIPipe/artifacts"},
             ],
             environment=container_env,
             devices=device_list,
