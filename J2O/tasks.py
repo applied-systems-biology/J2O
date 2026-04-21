@@ -245,9 +245,27 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             logfile.write("Stopping task!\n")
 
     except APIError as err:
+        err_msg = str(err)
         log.error("Error in podman API: %s", err)
         with open(jipipe_log_file_path, "a") as logfile:
             logfile.write(f"\n[J2O_ERROR] Podman API error: {err}\n")
+            if "cgroup controller" in err_msg.lower():
+                logfile.write(
+                    "\n[J2O_ERROR] This error is caused by missing cgroup controller delegation.\n"
+                    "On cgroups v2, the cpu and memory controllers must be delegated to the\n"
+                    "rootless Podman user for CPU/memory limits to be enforced.\n\n"
+                    "To fix this on WSL2 (with systemd), run inside WSL:\n"
+                    "  sudo mkdir -p /etc/systemd/system/user@.service.d\n"
+                    "  sudo tee /etc/systemd/system/user@.service.d/delegate.conf <<EOF\n"
+                    "  [Service]\n"
+                    "  Delegate=cpu memory pids\n"
+                    "  EOF\n"
+                    "  Then restart WSL (wsl --shutdown from PowerShell).\n\n"
+                    "Alternatively, add a boot command to /etc/wsl.conf:\n"
+                    "  [boot]\n"
+                    "  command=\"mkdir -p /sys/fs/cgroup/user.slice && echo +cpu +memory +pids > /sys/fs/cgroup/cgroup.subtree_control\"\n"
+                    "  Then restart WSL.\n"
+                )
             logfile.write("Stopping task!\n")
 
     finally:
