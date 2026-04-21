@@ -871,8 +871,10 @@
        * @param {JSON} nodesMap - The map of nodes in the selected .jip file
        * @param {HTMLElement} container - The container to display the content in
        */
-      function createParameterFields(paramsMetadata, nodesMap, container) {
+      function createParameterFields(nodesMap, container) {
         try{
+          const paramsMetadata = jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters']
+          const paramTypes = jip_file_content?.["jipipe:doc:parameters"]?.["types"];
           // iterate the content of all exported reference parameters
           const exported_reference_parameters = paramsMetadata['exported-parameters']['parameter-reference-groups'];
           exported_reference_parameters.forEach(reference_parameter => {
@@ -881,8 +883,16 @@
               // Get the UUID and parameter key of the node to navigate to the correct node in the nodesMap
               const [uuid, paramKey] = entry.path.split('/');
 
-              // Get the default value from the nodeMap if available to use as a placeholder
-              const defaultValue = nodesMap[uuid]?.[paramKey] || '';
+              // Get the parameter type (if there is any)
+              const paramType = paramTypes?.[entry.path];
+
+              // Get the default value from the nodeMap if available to use as a placeholder (wrap as expression if type is expression)
+              let defaultValue = nodesMap[uuid]?.[paramKey] || '';
+              if (paramType && paramType.includes("expression")) {
+                defaultValue = defaultValue["expression"]
+              }
+
+
               let refParameterDataType = null;
               let refParameterArchetype = null;
 
@@ -1136,7 +1146,7 @@
               finalValue = responseJSON['destination_path_s'];
             // If any other parameter input
             }else{
-              finalValue = transformToJIPipeCompatibleValue(inputValue, key);
+              finalValue = transformToJIPipeCompatibleValue(inputValue, key, paramType);
             }
 
             // Overwrite the entry with the JIPipe compatible value
@@ -1821,24 +1831,13 @@
        * @returns {string} - The JIPipe compatible value. 
        * 
       */
-      function transformToJIPipeCompatibleValue(inputValue, key){
+      function transformToJIPipeCompatibleValue(inputValue, key, paramType){
         try{
           // Always trim the input value to remove leading and trailing whitespace
           const trimmedInput = inputValue.trim();
 
-          // If the key includes 'dataset-ids', split by comma and return an array of clean IDs
-          if (key.includes('dataset-ids')) {
-            return trimmedInput.split(',').map(id => id.trim()).filter(id => id !== '');
-          }
-
-          // If the key includes 'name-generator', check if the "Input as Expression" checkbox is checked
-          else if (key.includes('name-generator')) {
-
-            // If the checkbox is not checked, wrap the expression in quotes
-            if (!document.getElementsByName(key)[0].checked){
-              const escapedInput = trimmedInput.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-              return { expression: `"${escapedInput}"` };
-            }
+          // If paramType is defined, check if the value is for an expression parameter (needs to be wrapped)
+          if (paramType && paramType.includes("expression")) {
             return { expression: trimmedInput };
           }
           // Default: just return trimmed input value
@@ -2180,7 +2179,7 @@
 
                 const {inputCount, outputCount } = displayNodeSummary(nodesMap, tempFileInfo);
                 await createDatasetInputFields(nodesMap, userDirectories, tempInput);
-                createParameterFields(jip_file_content['additional-metadata']['org.hkijena.jipipe:pipeline-parameters'], nodesMap, tempParams);
+                createParameterFields(nodesMap, tempParams);
                 await createOutputProjectInputFields(nodesMap, userDirectories, tempOutput);
 
                 // Start button only enabled if the .jip file has at least one input and one output node
