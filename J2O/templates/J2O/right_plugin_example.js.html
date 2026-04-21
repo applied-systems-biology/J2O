@@ -1,17 +1,55 @@
 <script>
-    $(function() {
-       // Initialise the right tab plugin, on our specified tab element
-       $("#jipipe_form_container").omeroweb_right_plugin({
-           plugin_enabled: function(selected){
-                // Check if the selected object is of the correct type
-                return true;
-           },
-           load_plugin_content: function(selected, obj_dtype, obj_id) {
-               // Create the plugin container
-               var url = "{% url 'j2o_index' %}";
-               $(this).load(url);
-            },
-       });
+$(function () {
+    const panelId = "jipipe_form_container";
+    const $tabs = $("#annotation_tabs");
+    const $panel = $("#" + panelId);
+    const $tabLi = $("#annotation_tabs_list a[href='#" + panelId + "']").closest("li");
+    const url = "{% url 'j2o_index' %}";
+    let loaded = false;
+
+    function ensureLoaded() {
+        if (loaded) return;
+
+        if (typeof OME !== "undefined" && OME.fadeInSpinner) {
+            OME.fadeInSpinner($panel);
+        }
+
+        $panel.load(url, function () {
+            loaded = true;
+        });
+    }
+
+    // Defensive: if your deployment leaves the tab disabled,
+    // enable it explicitly.
+    try {
+        $tabs.tabs("enable", $tabLi.index());
+    } catch (e) {
+        // Ignore if tabs aren't initialized yet.
+    }
+
+    // If this tab is already the active one when tabs are created, load it.
+    $tabs.on("tabscreate", function (event, ui) {
+        if (ui.panel && ui.panel.attr("id") === panelId) {
+            ensureLoaded();
+        }
     });
-    </script>
+
+    // Lazy-load the first time the user activates the tab.
+    $tabs.on("tabsactivate", function (event, ui) {
+        if (ui.newPanel && ui.newPanel.attr("id") === panelId) {
+            ensureLoaded();
+        }
+    });
+
+    // Optional: if the panel is already visible for any reason, load immediately.
+    if ($panel.is(":visible")) {
+        ensureLoaded();
+    }
+
+    // Intentionally do NOT bind selection_change.ome for reloading.
+    // If you later want selection awareness, update only a small subview,
+    // not the whole plugin root.
+});
+</script>
+
     
