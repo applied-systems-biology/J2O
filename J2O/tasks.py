@@ -183,8 +183,11 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
                     else:
                         logfile.write("\n[gpu] No GPU devices configured\n")
 
-        container = client.containers.run(
-            image,
+        # Build container run kwargs; only include cgroup limits when configured.
+        # When CPU_PERIOD/PER_JOB_CPU_QUOTA/PER_JOB_MEM_LIMIT are None (default),
+        # no limits are applied — the container uses all available host resources.
+        run_kwargs = dict(
+            image=image,
             command=command,
             name=name,
             detach=True,
@@ -198,10 +201,20 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             devices=device_list,
             stdout=True,
             stderr=True,
-            cpu_period=CPU_PERIOD,
-            cpu_quota=PER_JOB_CPU_QUOTA,
-            mem_limit=PER_JOB_MEM_LIMIT
         )
+
+        if CPU_PERIOD and PER_JOB_CPU_QUOTA:
+            run_kwargs["cpu_period"] = CPU_PERIOD
+            run_kwargs["cpu_quota"] = PER_JOB_CPU_QUOTA
+            with open(jipipe_log_file_path, "a") as logfile:
+                logfile.write(f"\n[cgroup] CPU limits applied (period={CPU_PERIOD}, quota={PER_JOB_CPU_QUOTA})\n")
+
+        if PER_JOB_MEM_LIMIT:
+            run_kwargs["mem_limit"] = PER_JOB_MEM_LIMIT
+            with open(jipipe_log_file_path, "a") as logfile:
+                logfile.write(f"\n[cgroup] Memory limit applied (mem_limit={PER_JOB_MEM_LIMIT})\n")
+
+        container = client.containers.run(**run_kwargs)
 
         # Stream the log
         while True:

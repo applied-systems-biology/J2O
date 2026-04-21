@@ -35,9 +35,9 @@ HOME = Path("~").expanduser()
 J2O_TEMP_DIR = get_omero_config("omero.web.jipipe.tempdir", os.fspath(HOME / "j2o-files" / "data"))
 J2O_LOG_DIR = get_omero_config("omero.web.jipipe.logdir", os.fspath(HOME / "j2o-files" / "logs"))
 JIPIPE_ARTIFACTS_DIR = os.fspath(HOME / ".local" / "share" / "JIPipe" / "artifacts")
-CPU_PERIOD = get_omero_config("omero.web.jipipe.cpu_period", 100000)
-PER_JOB_CPU_QUOTA = get_omero_config("omero.web.jipipe.cpu_quota", 200000)
-PER_JOB_MEM_LIMIT = get_omero_config("omero.web.jipipe.mem_limit", "8g")
+CPU_PERIOD = int(v) if (v := get_omero_config("omero.web.jipipe.cpu_period", None)) else None
+PER_JOB_CPU_QUOTA = int(v) if (v := get_omero_config("omero.web.jipipe.cpu_quota", None)) else None
+PER_JOB_MEM_LIMIT = get_omero_config("omero.web.jipipe.mem_limit", None)
 
 # GPU device passthrough for container runs.
 # Comma-separated list of CDI device names (e.g. "nvidia.com/gpu=all") or
