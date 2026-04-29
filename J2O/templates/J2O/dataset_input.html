@@ -767,8 +767,9 @@
           const { available_datasets } = await datasets_response.json();
 
           // Map the entries from the available datasets from the server to have them as input for TomSelect
+          // Values are prefixed with "Dataset:" so the backend can differentiate between object types
           const dataset_items = available_datasets.map(dataset => ({
-            value: dataset.dataset_id,
+            value: `Dataset:${dataset.dataset_id}`,
             name: dataset.dataset_name
           }));
 
@@ -776,6 +777,26 @@
           if (jip_file_major_version === 6 && jip_file_name.endsWith(".zip")){
             dataset_items.push({ value: "Original data", name: "Use original data" });
           }
+
+          // Request all available plates that can be used as input from the server
+          const plates_response = await fetch('/J2O/list_available_plates/', { credentials: 'same-origin' });
+
+          if (!plates_response.ok) {
+              const errorJSON = await plates_response.json();
+              console.error(`Error fetching available Plates: ${errorJSON.error}\n${errorJSON.trace}`);
+              container.innerHTML = `<p style="color:red;">Error fetching available Plates: ${errorJSON.error}</p>`;
+              return;
+          }
+
+          // Save the available_plates JSON response to use it later
+          const { available_plates } = await plates_response.json();
+
+          // Map the entries from the available plates from the server to have them as input for TomSelect
+          // Values are prefixed with "Plate:" so the backend can differentiate between object types
+          const plate_items = available_plates.map(plate => ({
+            value: `Plate:${plate.plate_id}`,
+            name: plate.screen_name ? `${plate.plate_name} (Screen: ${plate.screen_name})` : plate.plate_name
+          }));
 
           // Request all available files that can be used as input from the server
           const files_response = await fetch('/J2O/list_available_files/', { credentials: 'same-origin' });
@@ -812,7 +833,7 @@
               container,
               id: user_dir_key_value,
               labelText: `User directory: ${user_dir_key_value}`,
-              items: dataset_items.map(x => ({ ...x })), // Deep copy required to avoid TomSelect shared-object weirdness
+              items: [...dataset_items.map(x => ({ ...x })), ...plate_items.map(x => ({ ...x }))], // Combine datasets and plates for folder-type inputs
               placeholder: null,
               overrideMap: jip_file_user_directory_overrides,
               overrideKey: user_dir_key_value,
@@ -832,7 +853,8 @@
 
             let options = null;
             if (matchedKey.includes("folder")){
-              options = dataset_items.map(x => ({ ...x }))
+              // Combine datasets and plates for folder-type inputs
+              options = [...dataset_items.map(x => ({ ...x })), ...plate_items.map(x => ({ ...x }))]
             }
             else if (matchedKey.includes("file")){
               options = file_items.map(x => ({ ...x }))
@@ -844,7 +866,7 @@
             const inputId = `${uuid}/${validDatasetInput_nodeInfoID_to_referencePath_map[matchedKey]}`;
             const name = node["jipipe:node:name"];
 
-            const allow_multiple = matchedKey.endsWith("s"); // folder-path -> singular input ; folder-paths -> multiple inputs
+            const allow_multiple = matchedKey.includes("list"); // folder-path -> singular input ; folder-paths -> multiple inputs
 
             addTomSelectElementToUI({
               container,
@@ -1807,7 +1829,15 @@
               option: function (data, escape) {
                 // Make display dependent on section type
                 if (section === "I/O"){
-                  return `<div class="d-flex"><span>ID ${escape(data.value)}: ${escape(data.name)}</span></div>`;
+                  // Parse prefixed values (e.g. "Dataset:123" or "Plate:456") for cleaner display
+                  let displayValue = data.value;
+                  let typeLabel = "";
+                  if (typeof data.value === "string" && data.value.includes(":")) {
+                    const parts = data.value.split(":");
+                    displayValue = parts[1];
+                    typeLabel = ` (${parts[0]})`;
+                  }
+                  return `<div class="d-flex"><span>ID ${escape(displayValue)}${typeLabel}: ${escape(data.name)}</span></div>`;
                 }
                 else{
                   return `<div class="d-flex"><span>${escape(data.value)}</span></div>`;

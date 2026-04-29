@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 import logging
 import os
+import re
 import signal
 import uuid
 from typing import Optional
@@ -608,6 +609,70 @@ def list_available_files(request, conn=None, **kwargs) -> JsonResponse:
         conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
 
 @login_required()
+def list_available_plates(request, conn=None, **kwargs) -> JsonResponse:
+    """
+    Lists all plates (from High Content Screens) in
+    all OMERO groups of the current user.
+    Returns a JSON response with plate_id, plate_name, and screen_name.
+
+    URL: J2O/list_available_plates/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
+    """
+    try:
+        original_group_id = conn.SERVICE_OPTS.getOmeroGroup()
+        user_id = conn.getUserId()
+        user_groups = list(conn.getOtherGroups(user_id))
+
+        # Keep track of which plate IDs we've already seen
+        seen_plate_ids = set()
+
+        # Prepare a Python list to hold plate info dicts
+        all_available_plates = []
+
+        # Loop through each group, switch the service-opts, and fetch every Plate
+        for group in user_groups:
+            # Set the session's "active group" to gid
+            conn.SERVICE_OPTS.setOmeroGroup(group.id)
+
+            # Retrieve all Plate objects visible in this group
+            plates = conn.getObjects("Plate")
+            for plate in plates:
+
+                # Extract the numeric ID
+                plate_id = plate.getId()
+
+                # Skip if we've already added this plate_id
+                if plate_id in seen_plate_ids:
+                    continue
+                seen_plate_ids.add(plate_id)
+
+                # Get plate name and parent screen name for context
+                plate_name = plate.getName()
+                screen_name = ""
+                try:
+                    parent = plate.getParent()
+                    if parent is not None:
+                        screen_name = parent.getName()
+                except Exception:
+                    pass
+
+                all_available_plates.append({
+                    'plate_id': plate_id,
+                    'plate_name': plate_name,
+                    'screen_name': screen_name
+                })
+
+        return JsonResponse({'available_plates': all_available_plates})
+
+    except Exception as e:
+        logger.exception("Error when trying to list available plates: {e}", exc_info=1)
+        return JsonResponse({'error': f'Internal server error listing available plates: {e}', 'trace': traceback.format_exc()}, status=500)
+
+    finally:
+        conn.SERVICE_OPTS.setOmeroGroup(original_group_id)
+
+@login_required()
 def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
     """
     Lists all projects in all OMERO groups of the current user. 
@@ -856,6 +921,89 @@ def get_temp_output_subdirectories(request, conn=None, **kwargs) -> JsonResponse
         logger.exception("Failed to list temp output subdirectories: %s", error)
         return JsonResponse({"error": f"Error retrieving temp output subdirectories: {error}"}, status=400)
 
+# --------------- Helper functions for prefixed IDs and folder naming ---------------
+
+def parse_prefixed_id(raw_id: str) -> tuple:
+    """
+    Parse a prefixed ID string like 'Dataset:123' or 'Plate:456'.
+    Returns (type_str, numeric_id).
+    Unprefixed numeric strings default to ('Dataset', int) for backward compatibility.
+    """
+    raw_id = raw_id.strip()
+    if ":" in raw_id:
+        type_str, id_str = raw_id.split(":", 1)
+        return (type_str, int(id_str))
+    return ("Dataset", int(raw_id))  # backward compatibility
+
+
+def well_to_name(row: int, column: int) -> str:
+    """
+    Convert zero-indexed OMERO well row/column to a well name.
+    Row 0 -> A, Row 1 -> B, etc.
+    Column 0 -> 1, Column 1 -> 2, etc. (no leading zero)
+    Example: row=0, column=0 -> 'A1'
+    """
+    row_letter = chr(ord('A') + row)
+    return f"{row_letter}{column + 1}"
+
+
+def sanitize_name(name: str) -> str:
+    """
+    Sanitize an OMERO object name for use as a filesystem folder name.
+    Replaces characters that are invalid in paths with underscores.
+    """
+    return re.sub(r'[/\\:*?"<>|]', '_', name)
+
+
+def _get_group_id(obj):
+    """Extract the integer group ID from an OMERO gateway object's details."""
+    g = obj.getDetails().group.id
+    if hasattr(g, 'val'):
+        return g.val
+    if hasattr(g, 'getValue'):
+        return g.getValue()
+    return int(g)
+
+
+def download_original_file_with_ctx(conn, obj, target_path, gid, chunk_size=1024 * 1024):
+    """
+    Download an OriginalFile using explicit OMERO group context via RawFileStore.
+
+    This preserves the implicit session context and only adds/overrides
+    omero.group, matching OMERO's own context-handling pattern.
+    """
+    try:
+        implicit_ctx = conn.c.ic.getImplicitContext()
+        ctx = dict(implicit_ctx.getContext())
+    except Exception:
+        ctx = {}
+    ctx["omero.group"] = str(gid)
+
+    raw = obj._obj if hasattr(obj, "_obj") else obj
+
+    file_id = raw.getId().getValue()
+    size = raw.getSize().getValue()
+
+    rfs = conn.c.sf.createRawFileStore()
+    try:
+        rfs.setFileId(file_id, _ctx=ctx)
+
+        parent_dir = os.path.dirname(target_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
+        with open(target_path, "wb") as out:
+            offset = 0
+            while offset < size:
+                length = min(chunk_size, size - offset)
+                data = rfs.read(offset, length, _ctx=ctx)
+                if not data:
+                    break
+                out.write(data)
+                offset += len(data)
+    finally:
+        rfs.close()
+
 @require_POST
 @login_required()
 def save_input_to_server(request, conn=None, **kwargs):
@@ -868,7 +1016,10 @@ def save_input_to_server(request, conn=None, **kwargs):
         out_dir = payload['path']
         input_key = payload['input_key']
 
-        ids = [int(x.strip()) for x in payload['ids'].split(",")]
+        # Parse prefixed IDs (e.g. "Dataset:123" -> ("Dataset", 123), "Plate:456" -> ("Plate", 456))
+        # Unprefixed numeric IDs default to ("Dataset", id) for backward compatibility
+        raw_ids = [x.strip() for x in payload['ids'].split(",") if x.strip()]
+        ids = [parse_prefixed_id(raw_id) for raw_id in raw_ids]
 
         if conn is None:
             return JsonResponse({'error': 'No OMERO connection'}, status=401)
@@ -881,107 +1032,374 @@ def save_input_to_server(request, conn=None, **kwargs):
         errors = []
         destination_path_s = []
 
-        # Code for one folder structures (input are dataset ids)
+        # Code for one folder structures (input are dataset or plate ids)
         if input_key == "folder-path":
             destination_path_s = out_dir
-            for dataset_id in ids:
-                dataset = conn.getObject("Dataset", dataset_id)
-                if dataset is None:
-                    return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
+            for obj_type, obj_id in ids:
 
-                for img in dataset.listChildren():
-                    processed_files += 1
-                    fileset = img.getFileset()
-                    if fileset is None:
-                        errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
-                        continue
+                if obj_type == "Dataset":
+                    dataset = conn.getObject("Dataset", obj_id)
+                    if dataset is None:
+                        return JsonResponse({'error': f'Dataset {obj_id} not found'}, status=404)
 
-                    # Mirror the CLI `omero download Image:<id> <dir>` behavior:
-                    # keep the relative path under the Fileset’s template prefix.
-                    template_prefix = fileset.getTemplatePrefix() or ""
+                    dataset_group_id = _get_group_id(dataset)
 
-                    for ofile in fileset.listFiles():
-                        try:
-                            rel_dir = ofile.path.replace(template_prefix, "", 1)
-                            target_dir = os.path.join(out_dir, rel_dir)
-                            os.makedirs(target_dir, exist_ok=True)
+                    for img in dataset.listChildren():
+                        processed_files += 1
+                        fileset = img.getFileset()
+                        if fileset is None:
+                            errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
+                            continue
 
-                            target_path = os.path.join(target_dir, ofile.name)
+                        # Mirror the CLI `omero download Image:<id> <dir>` behavior:
+                        # keep the relative path under the Fileset's template prefix.
+                        template_prefix = fileset.getTemplatePrefix() or ""
 
-                            if not os.path.exists(target_path):
-                                # `conn.c.download(OriginalFile, local_path)` saves the binary
-                                conn.c.download(ofile._obj, target_path)
-                                saved_files += 1
+                        for ofile in fileset.listFiles():
+                            try:
+                                rel_dir = ofile.path.replace(template_prefix, "", 1)
+                                target_dir = os.path.join(out_dir, rel_dir)
+                                os.makedirs(target_dir, exist_ok=True)
 
-                            saves.append({
-                                'image_id': img.id,
-                                'file_name': ofile.name,
-                                'saved_to': target_path
-                            })
+                                target_path = os.path.join(target_dir, ofile.name)
 
-                        except Exception as e:
-                            errors.append({
-                                'image_id': img.id,
-                                'file_name': getattr(ofile, 'name', None),
-                                'error': str(e)
-                            })
+                                if not os.path.exists(target_path):
+                                    download_original_file_with_ctx(conn, ofile, target_path, dataset_group_id)
+                                    saved_files += 1
 
-        # Code for multiple folders structures (input are datasets ids)
-        if input_key == "folder-paths":
-            for dataset_id in ids:
+                                saves.append({
+                                    'image_id': img.id,
+                                    'file_name': ofile.name,
+                                    'saved_to': target_path
+                                })
 
-                dataset_dir = os.path.join(out_dir, str(dataset_id))
-                os.makedirs(dataset_dir, exist_ok=True)
+                            except Exception as e:
+                                errors.append({
+                                    'image_id': img.id,
+                                    'file_name': getattr(ofile, 'name', None),
+                                    'error': str(e)
+                                })
 
-                dataset = conn.getObject("Dataset", dataset_id)
-                if dataset is None:
-                    return JsonResponse({'error': f'Dataset {dataset_id} not found'}, status=404)
+                elif obj_type == "Plate":
+                    original_group = conn.SERVICE_OPTS.getOmeroGroup()
+                    plate_group_id = None
+                    try:
+                        conn.SERVICE_OPTS.setOmeroGroup(-1)  # Search across all groups
+                        plate = conn.getObject("Plate", obj_id)
+                        if plate is None:
+                            return JsonResponse({'error': f'Plate {obj_id} not found'}, status=404)
 
-                for img in dataset.listChildren():
-                    processed_files += 1
-                    fileset = img.getFileset()
-                    if fileset is None:
-                        errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
-                        continue
+                        plate_group_id = _get_group_id(plate)
+                        conn.SERVICE_OPTS.setOmeroGroup(plate_group_id)
 
-                    # Mirror the CLI `omero download Image:<id> <dir>` behavior:
-                    # keep the relative path under the Fileset’s template prefix.
-                    template_prefix = fileset.getTemplatePrefix() or ""
+                        # Create plate folder with standardized naming: Plate_{Name}_{ID}
+                        plate_name = sanitize_name(plate.getName())
+                        plate_dir = os.path.join(out_dir, f"Plate_{plate_name}_{obj_id}")
+                        os.makedirs(plate_dir, exist_ok=True)
 
-                    for ofile in fileset.listFiles():
-                        try:
-                            rel_dir = ofile.path.replace(template_prefix, "", 1)
-                            target_dir = os.path.join(dataset_dir, rel_dir)
-                            os.makedirs(target_dir, exist_ok=True)
+                        # Build well mapping and collect unique Filesets.
+                        # In HCS data, ALL images in a Plate share a single Fileset,
+                        # so we must download it once and route files to well dirs
+                        # based on the file naming pattern (e.g. "well-A2.ome.tiff" -> Well A2).
+                        well_map = {}        # well_name -> {'dir': str, 'id': int, 'image_ids': [int]}
+                        image_to_well = {}   # image_id  -> well_name
+                        filesets = {}        # fileset_id -> fileset wrapper
+                        fileset_images = {}  # fileset_id -> [image_id]
 
-                            target_path = os.path.join(target_dir, ofile.name)
+                        for well in plate.listChildren():
+                            well_name = well_to_name(well.row, well.column)
+                            # Create well folder with standardized naming: Well_{Row}{Column}_{ID}
+                            well_dir = os.path.join(plate_dir, f"Well_{well_name}_{well.getId()}")
+                            os.makedirs(well_dir, exist_ok=True)
 
-                            if not os.path.exists(target_path):
-                                # `conn.c.download(OriginalFile, local_path)` saves the binary
-                                conn.c.download(ofile._obj, target_path)
-                                saved_files += 1
-                                destination_path_s.append(target_dir)
+                            image_ids = []
+                            for well_sample in well.listChildren():
+                                img = well_sample.getImage()
+                                image_ids.append(img.id)
+                                image_to_well[img.id] = well_name
+                                processed_files += 1
 
-                            saves.append({
-                                'image_id': img.id,
-                                'file_name': ofile.name,
-                                'saved_to': target_path
-                            })
+                                fileset = img.getFileset()
+                                if fileset is not None:
+                                    if fileset.id not in filesets:
+                                        filesets[fileset.id] = fileset
+                                        fileset_images[fileset.id] = []
+                                    fileset_images[fileset.id].append(img.id)
+                                else:
+                                    errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
 
-                        except Exception as e:
-                            errors.append({
-                                'image_id': img.id,
-                                'file_name': getattr(ofile, 'name', None),
-                                'error': str(e)
-                            })
+                            well_map[well_name] = {
+                                'dir': well_dir,
+                                'id': well.getId(),
+                                'image_ids': image_ids,
+                            }
+
+                        # Download each unique Fileset once and route files to well directories
+                        for fs_id, fileset in filesets.items():
+                            template_prefix = fileset.getTemplatePrefix() or ""
+                            is_shared = len(fileset_images[fs_id]) > 1
+
+                            for ofile in fileset.listFiles():
+                                try:
+                                    file_name = ofile.name
+
+                                    if is_shared:
+                                        # Shared Fileset: route files to wells by file name pattern
+                                        target_well_dir = None
+                                        matched_well_name = None
+                                        img_idx = 0  # default: first image in well
+
+                                        # Parse well name and optional image index from file name.
+                                        # Pattern: "well-A2.ome.tiff" -> well A2, image 0
+                                        #          "well-C2-2.ome.tiff" -> well C2, image 1 (2nd image)
+                                        well_match = re.match(
+                                            r'well-([A-Z])(\d+)(?:-(\d+))?',
+                                            file_name, re.IGNORECASE,
+                                        )
+                                        if well_match:
+                                            row_letter = well_match.group(1).upper()
+                                            col_num = int(well_match.group(2))  # strips leading zeros
+                                            matched_well_name = f"{row_letter}{col_num}"
+                                            if matched_well_name in well_map:
+                                                target_well_dir = well_map[matched_well_name]['dir']
+                                            # The "-N" suffix is 1-based; convert to 0-based index
+                                            if well_match.group(3):
+                                                img_idx = int(well_match.group(3)) - 1
+
+                                        if target_well_dir is None:
+                                            # Skip companion/metadata files that don't match the well pattern
+                                            # These files (e.g., .ome.xml) are not needed for JIPipe processing
+                                            continue
+
+                                        img_id = None
+                                        if matched_well_name and matched_well_name in well_map:
+                                            img_ids = well_map[matched_well_name]['image_ids']
+                                            if img_ids and img_idx < len(img_ids):
+                                                img_id = img_ids[img_idx]
+                                            elif img_ids:
+                                                img_id = img_ids[0]
+                                    else:
+                                        # Non-shared Fileset: all files belong to one image's well
+                                        img_id = fileset_images[fs_id][0]
+                                        well_name = image_to_well.get(img_id)
+                                        if well_name and well_name in well_map:
+                                            target_well_dir = well_map[well_name]['dir']
+                                        else:
+                                            # Skip files that don't match any well
+                                            continue
+
+                                    # Save files directly to well directory with original filename
+                                    target_path = os.path.join(target_well_dir, file_name)
+
+                                    if not os.path.exists(target_path):
+                                        download_original_file_with_ctx(conn, ofile, target_path, plate_group_id)
+                                        saved_files += 1
+
+                                    saves.append({
+                                        'image_id': img_id,
+                                        'file_name': file_name,
+                                        'saved_to': target_path
+                                    })
+
+                                except Exception as e:
+                                    errors.append({
+                                        'file_name': getattr(ofile, 'name', None),
+                                        'error': str(e)
+                                    })
+                    finally:
+                        conn.SERVICE_OPTS.setOmeroGroup(original_group)
+
+        # Code for multiple folders structures (input are dataset or plate ids)
+        elif input_key == "folder-paths":
+            for obj_type, obj_id in ids:
+
+                if obj_type == "Dataset":
+                    dataset = conn.getObject("Dataset", obj_id)
+                    if dataset is None:
+                        return JsonResponse({'error': f'Dataset {obj_id} not found'}, status=404)
+
+                    dataset_group_id = _get_group_id(dataset)
+                    dataset_dir = os.path.join(out_dir, f"Dataset_{sanitize_name(dataset.getName())}_{obj_id}")
+                    os.makedirs(dataset_dir, exist_ok=True)
+
+                    for img in dataset.listChildren():
+                        processed_files += 1
+                        fileset = img.getFileset()
+                        if fileset is None:
+                            errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
+                            continue
+
+                        # Mirror the CLI `omero download Image:<id> <dir>` behavior:
+                        # keep the relative path under the Fileset's template prefix.
+                        template_prefix = fileset.getTemplatePrefix() or ""
+
+                        for ofile in fileset.listFiles():
+                            try:
+                                rel_dir = ofile.path.replace(template_prefix, "", 1)
+                                target_dir = os.path.join(dataset_dir, rel_dir)
+                                os.makedirs(target_dir, exist_ok=True)
+
+                                target_path = os.path.join(target_dir, ofile.name)
+
+                                if not os.path.exists(target_path):
+                                    download_original_file_with_ctx(conn, ofile, target_path, dataset_group_id)
+                                    saved_files += 1
+                                    destination_path_s.append(target_dir)
+
+                                saves.append({
+                                    'image_id': img.id,
+                                    'file_name': ofile.name,
+                                    'saved_to': target_path
+                                })
+
+                            except Exception as e:
+                                errors.append({
+                                    'image_id': img.id,
+                                    'file_name': getattr(ofile, 'name', None),
+                                    'error': str(e)
+                                })
+
+                elif obj_type == "Plate":
+                    original_group = conn.SERVICE_OPTS.getOmeroGroup()
+                    plate_group_id = None
+                    try:
+                        conn.SERVICE_OPTS.setOmeroGroup(-1)  # Search across all groups
+                        plate = conn.getObject("Plate", obj_id)
+                        if plate is None:
+                            return JsonResponse({'error': f'Plate {obj_id} not found'}, status=404)
+
+                        plate_group_id = _get_group_id(plate)
+                        conn.SERVICE_OPTS.setOmeroGroup(plate_group_id)
+
+                        # Create plate folder with standardized naming: Plate_{Name}_{ID}
+                        plate_name = sanitize_name(plate.getName())
+                        plate_dir = os.path.join(out_dir, f"Plate_{plate_name}_{obj_id}")
+                        os.makedirs(plate_dir, exist_ok=True)
+                        if plate_dir not in destination_path_s:
+                            destination_path_s.append(plate_dir)
+
+
+                        # Build well mapping and collect unique Filesets.
+                        # In HCS data, ALL images in a Plate share a single Fileset,
+                        # so we must download it once and route files to well dirs
+                        # based on the file naming pattern (e.g. "well-A2.ome.tiff" -> Well A2).
+                        well_map = {}        # well_name -> {'dir': str, 'id': int, 'image_ids': [int]}
+                        image_to_well = {}   # image_id  -> well_name
+                        filesets = {}        # fileset_id -> fileset wrapper
+                        fileset_images = {}  # fileset_id -> [image_id]
+
+                        for well in plate.listChildren():
+                            well_name = well_to_name(well.row, well.column)
+                            # Create well folder with standardized naming: Well_{Row}{Column}_{ID}
+                            well_dir = os.path.join(plate_dir, f"Well_{well_name}_{well.getId()}")
+                            os.makedirs(well_dir, exist_ok=True)
+
+                            image_ids = []
+                            for well_sample in well.listChildren():
+                                img = well_sample.getImage()
+                                image_ids.append(img.id)
+                                image_to_well[img.id] = well_name
+                                processed_files += 1
+
+                                fileset = img.getFileset()
+                                if fileset is not None:
+                                    if fileset.id not in filesets:
+                                        filesets[fileset.id] = fileset
+                                        fileset_images[fileset.id] = []
+                                    fileset_images[fileset.id].append(img.id)
+                                else:
+                                    errors.append({'image_id': img.id, 'error': 'Image has no Fileset (no original files to save).'})
+
+                            well_map[well_name] = {
+                                'dir': well_dir,
+                                'id': well.getId(),
+                                'image_ids': image_ids,
+                            }
+
+                        # Download each unique Fileset once and route files to well directories
+                        for fs_id, fileset in filesets.items():
+                            template_prefix = fileset.getTemplatePrefix() or ""
+                            is_shared = len(fileset_images[fs_id]) > 1
+
+                            for ofile in fileset.listFiles():
+                                try:
+                                    file_name = ofile.name
+
+                                    if is_shared:
+                                        # Shared Fileset: route files to wells by file name pattern
+                                        target_well_dir = None
+                                        matched_well_name = None
+                                        img_idx = 0  # default: first image in well
+
+                                        # Parse well name and optional image index from file name.
+                                        # Pattern: "well-A2.ome.tiff" -> well A2, image 0
+                                        #          "well-C2-2.ome.tiff" -> well C2, image 1 (2nd image)
+                                        well_match = re.match(
+                                            r'well-([A-Z])(\d+)(?:-(\d+))?',
+                                            file_name, re.IGNORECASE,
+                                        )
+                                        if well_match:
+                                            row_letter = well_match.group(1).upper()
+                                            col_num = int(well_match.group(2))  # strips leading zeros
+                                            matched_well_name = f"{row_letter}{col_num}"
+                                            if matched_well_name in well_map:
+                                                target_well_dir = well_map[matched_well_name]['dir']
+                                            # The "-N" suffix is 1-based; convert to 0-based index
+                                            if well_match.group(3):
+                                                img_idx = int(well_match.group(3)) - 1
+
+                                        if target_well_dir is None:
+                                            # Skip companion/metadata files that don't match the well pattern
+                                            # These files (e.g., .ome.xml) are not needed for JIPipe processing
+                                            continue
+
+                                        img_id = None
+                                        if matched_well_name and matched_well_name in well_map:
+                                            img_ids = well_map[matched_well_name]['image_ids']
+                                            if img_ids and img_idx < len(img_ids):
+                                                img_id = img_ids[img_idx]
+                                            elif img_ids:
+                                                img_id = img_ids[0]
+                                    else:
+                                        # Non-shared Fileset: all files belong to one image's well
+                                        img_id = fileset_images[fs_id][0]
+                                        well_name = image_to_well.get(img_id)
+                                        if well_name and well_name in well_map:
+                                            target_well_dir = well_map[well_name]['dir']
+                                        else:
+                                            # Skip files that don't match any well
+                                            continue
+
+                                    # Save files directly to well directory with original filename
+                                    target_path = os.path.join(target_well_dir, file_name)
+
+                                    if not os.path.exists(target_path):
+                                        download_original_file_with_ctx(conn, ofile, target_path, plate_group_id)
+                                        saved_files += 1
+
+                                    saves.append({
+                                        'image_id': img_id,
+                                        'file_name': file_name,
+                                        'saved_to': target_path
+                                    })
+
+                                except Exception as e:
+                                    errors.append({
+                                        'file_name': getattr(ofile, 'name', None),
+                                        'error': str(e)
+                                    })
+                    finally:
+                        conn.SERVICE_OPTS.setOmeroGroup(original_group)
 
         # Code for one folder structures (input are OriginalFile ids)
-        if input_key == "file-name":
-            for file_id in ids:
+        elif input_key == "file-name":
+            for _obj_type, file_id in ids:
                 # Get the OriginalFile object directly
                 original_file = conn.getObject("OriginalFile", file_id)
                 if original_file is None:
                     return JsonResponse({'error': f'OriginalFile with ID {file_id} not found'}, status=404)
+
+                file_group_id = _get_group_id(original_file)
 
                 # Get the filename directly from the OriginalFile object
                 file_name = original_file.getName() or original_file.name or f"file_{file_id}"
@@ -994,8 +1412,7 @@ def save_input_to_server(request, conn=None, **kwargs):
                 
                 try:
                     if not os.path.exists(target_path):
-                        # Download the file using conn.c.download
-                        conn.c.download(original_file._obj, target_path)
+                        download_original_file_with_ctx(conn, original_file, target_path, file_group_id)
                         saved_files += 1
                         destination_path_s = target_path
 
@@ -1014,12 +1431,14 @@ def save_input_to_server(request, conn=None, **kwargs):
                     })
 
         # Code for one folder structures (input are OriginalFile ids)
-        if input_key == "file-names":
-            for file_id in ids:
+        elif input_key == "file-names":
+            for _obj_type, file_id in ids:
                 # Get the OriginalFile object directly
                 original_file = conn.getObject("OriginalFile", file_id)
                 if original_file is None:
                     return JsonResponse({'error': f'OriginalFile with ID {file_id} not found'}, status=404)
+
+                file_group_id = _get_group_id(original_file)
 
                 # Get the filename directly from the OriginalFile object
                 file_name = original_file.getName() or original_file.name or f"file_{file_id}"
@@ -1032,8 +1451,7 @@ def save_input_to_server(request, conn=None, **kwargs):
                 
                 try:
                     if not os.path.exists(target_path):
-                        # Download the file using conn.c.download
-                        conn.c.download(original_file._obj, target_path)
+                        download_original_file_with_ctx(conn, original_file, target_path, file_group_id)
                         saved_files += 1
                         destination_path_s.append(target_path)
 
@@ -1051,14 +1469,17 @@ def save_input_to_server(request, conn=None, **kwargs):
                         'error': str(e)
                     })
 
+        else:
+            return JsonResponse({'error': f'Unsupported input_key: {input_key}'}, status=400)
+
         status = 200 if not errors else 207  # 207 = partial success
         return JsonResponse({
-            'ids': ids,
+            'ids': [f"{t}:{i}" for t, i in ids],
             'input_key': input_key,
             'processed_files': processed_files,
             'saved_files': saved_files,
             'saves': saves,
-            'errors': errors, 
+            'errors': errors,
             'destination_path_s': destination_path_s
         }, status=status)
 
