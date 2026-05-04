@@ -217,12 +217,12 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         # The host paths are like /tmp/j2o-files/data/tmpXXX
         host_temp_input = container_path_to_host_path(
             str(temp_input),
-            str(Path(J2O_TEMP_DIR).parent),  # /opt/omero/web/.../data -> parent of J2O_TEMP_DIR
+            str(Path(temp_input).parent),  # /opt/omero/web/.../data -> parent of J2O_TEMP_DIR
             J2O_HOST_DATA_PATH  # /tmp/j2o-files
         )
         host_temp_output = container_path_to_host_path(
             str(temp_output),
-            str(Path(J2O_TEMP_DIR).parent),
+            str(Path(temp_output).parent),
             J2O_HOST_DATA_PATH
         )
         host_artifacts = container_path_to_host_path(
