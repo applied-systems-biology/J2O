@@ -1095,16 +1095,16 @@
         manually_write_to_log_window('Initializing filesystem, please wait...\n');
         const response = await fetch('/J2O/create_temp_directories/', {credentials: 'same-origin'});
 
+        if (!response.ok) {
+          // Re-throw as an Error so outer catch picks it up
+          throw new Error(data.error || "Unknown error while creating temp directories");
+        }
+
         let data;
         try {
           data = await response.json();
         } catch (err) {
           throw new Error(`Server did not return valid JSON. Check logs or Django output.`);
-        }
-
-        if (!response.ok) {
-          // Re-throw as an Error so outer catch picks it up
-          throw new Error(data.error || "Unknown error while creating temp directories");
         }
 
         // Save response

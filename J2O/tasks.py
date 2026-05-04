@@ -15,6 +15,31 @@ GPU_COUNT = settings.GPU_COUNT
 GPU_RESERVATION_TTL = int(settings.GPU_RESERVATION_TTL) if settings.GPU_RESERVATION_TTL != None else settings.GPU_RESERVATION_TTL
 JIPIPE_ARTIFACTS_DIR = settings.JIPIPE_ARTIFACTS_DIR
 
+# Host paths for Podman (when running on Docker host)
+# These translate container paths to host-accessible paths
+J2O_HOST_DATA_PATH = settings.J2O_HOST_DATA_PATH
+J2O_HOST_ARTIFACTS_PATH = settings.J2O_HOST_ARTIFACTS_PATH
+
+
+def container_path_to_host_path(container_path: str, container_prefix: str, host_prefix: str) -> str:
+    """
+    Translate a container path to a host path.
+    
+    When Podman runs on the Docker host, it needs host paths, not container paths.
+    This function replaces the container path prefix with the host path prefix.
+    
+    Args:
+        container_path: The path inside the container (e.g., /opt/omero/web/.../data/tmpXXX)
+        container_prefix: The container path prefix to replace (e.g., /opt/omero/web/.../data)
+        host_prefix: The host path prefix to use instead (e.g., /tmp/j2o-files/data)
+    
+    Returns:
+        The translated host path
+    """
+    if container_path.startswith(container_prefix):
+        return container_path.replace(container_prefix, host_prefix, 1)
+    return container_path
+
 
 class GPUReservationError(RuntimeError):
     """Raised when no GPU could be reserved within the timeout."""
@@ -186,6 +211,26 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         # Build container run kwargs; only include cgroup limits when configured.
         # When CPU_PERIOD/PER_JOB_CPU_QUOTA/PER_JOB_MEM_LIMIT are None (default),
         # no limits are applied — the container uses all available host resources.
+        
+        # Translate container paths to host paths for Podman running on Docker host (if HOST_PATHs are not set we still use config defined path)
+        # The container paths are like /opt/omero/web/.../data/tmpXXX
+        # The host paths are like /tmp/j2o-files/data/tmpXXX
+        host_temp_input = container_path_to_host_path(
+            str(temp_input),
+            str(Path(J2O_TEMP_DIR).parent),  # /opt/omero/web/.../data -> parent of J2O_TEMP_DIR
+            J2O_HOST_DATA_PATH  # /tmp/j2o-files
+        )
+        host_temp_output = container_path_to_host_path(
+            str(temp_output),
+            str(Path(J2O_TEMP_DIR).parent),
+            J2O_HOST_DATA_PATH
+        )
+        host_artifacts = container_path_to_host_path(
+            JIPIPE_ARTIFACTS_DIR,
+            str(Path(JIPIPE_ARTIFACTS_DIR).parent),  # /root/.local/share/JIPipe -> parent
+            J2O_HOST_ARTIFACTS_PATH  # /tmp/j2o-artifacts
+        )
+        
         run_kwargs = dict(
             image=image,
             command=command,
@@ -193,9 +238,9 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
             detach=True,
             auto_remove=False,
             mounts=[
-                {"type": "bind", "source": str(temp_input),  "target": temp_input},
-                {"type": "bind", "source": str(temp_output), "target": temp_output},
-                {"type": "bind", "source": JIPIPE_ARTIFACTS_DIR, "target": "/root/.local/share/JIPipe/artifacts"},
+                {"type": "bind", "source": host_temp_input,  "target": temp_input},
+                {"type": "bind", "source": host_temp_output, "target": temp_output},
+                {"type": "bind", "source": host_artifacts, "target": "/root/.local/share/JIPipe/artifacts"},
             ],
             environment=container_env,
             devices=device_list,

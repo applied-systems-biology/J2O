@@ -56,5 +56,11 @@ GPU_COUNT = int(get_omero_config("omero.web.jipipe.gpu_count", "0"))
 # Prevents permanent lock if a task crashes without reaching the finally block.
 GPU_RESERVATION_TTL = get_omero_config("omero.web.jipipe.gpu_lock_time", None)
 
+# Host paths for container-to-host path translation (used when running Podman on the Docker host)
+# These paths must match the host bind mounts in docker-compose.yml
+# Container path prefix -> Host path prefix
+J2O_HOST_DATA_PATH = os.environ.get("J2O_HOST_DATA_PATH", J2O_TEMP_DIR)
+J2O_HOST_ARTIFACTS_PATH = os.environ.get("J2O_HOST_ARTIFACTS_PATH", JIPIPE_ARTIFACTS_DIR)
+
 os.makedirs(J2O_LOG_DIR, exist_ok=True)
 os.makedirs(J2O_TEMP_DIR, exist_ok=True)
