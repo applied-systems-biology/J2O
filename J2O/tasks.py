@@ -46,7 +46,7 @@ class GPUReservationError(RuntimeError):
     pass
 
 
-def reserve_gpu(job_uuid: str, log: logging.Logger) -> int | None:
+def reserve_gpu(job_uuid: str, log: logging.Logger):
     """Try to reserve an exclusive GPU for *job_uuid* via Redis.
 
     Returns the GPU index on success, or ``None`` when the scheduler is
@@ -76,7 +76,7 @@ def reserve_gpu(job_uuid: str, log: logging.Logger) -> int | None:
         time.sleep(2)
 
 
-def release_gpu(gpu_idx: int, job_uuid: str, log: logging.Logger) -> None:
+def release_gpu(gpu_idx: int, job_uuid: str, log: logging.Logger):
     """Release a GPU reservation, but only if it still belongs to *job_uuid*."""
     if gpu_idx is None:
         return
