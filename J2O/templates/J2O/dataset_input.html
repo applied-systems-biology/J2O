@@ -1866,8 +1866,8 @@
           // Always trim the input value to remove leading and trailing whitespace
           const trimmedInput = inputValue.trim();
 
-          // If paramType is defined, check if the value is for an expression parameter (needs to be wrapped)
-          if (paramType && paramType.includes("expression")) {
+          // If paramType is defined, check if the value is for an expression parameter (needs to be wrapped) -> can be expression or filter in name
+          if (paramType && (paramType.includes("expression") || paramType.includes("filter"))) {
             return { expression: trimmedInput };
           }
           // Default: just return trimmed input value
