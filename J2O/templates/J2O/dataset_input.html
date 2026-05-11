@@ -908,9 +908,9 @@
               // Get the parameter type (if there is any)
               const paramType = paramTypes?.[entry.path];
 
-              // Get the default value from the nodeMap if available to use as a placeholder (wrap as expression if type is expression)
+              // Get the default value from the nodeMap if available to use as a placeholder (wrap as expression if type is expression) -> can be expression or filter in name
               let defaultValue = nodesMap[uuid]?.[paramKey] || '';
-              if (paramType && paramType.includes("expression")) {
+              if (paramType && (paramType.includes("expression") || paramType.includes("filter"))) {
                 defaultValue = defaultValue["expression"]
               }
 
