@@ -93,6 +93,8 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         temp_output = json_request.get('output_path')
         jip_file_id = json_request.get('jip_file_id')
         requires_gpu = json_request.get('requires_gpu', False)
+        override_DOM_elements_map = json_request.get('override_DOM_elements_map')
+        uuid_to_project_id_map = json_request.get('uuid_to_project_id_map')
 
         # Server-side fetch of JIPipe file content from OMERO (avoids large request body)
         jip_file = conn.getObject('originalfile', jip_file_id)
@@ -165,10 +167,14 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         # The Celery worker will append to this file once it starts
         Path(log_file).touch()
 
+        session_uuid = conn.c.getSessionId()
+        host = conn.host
+        port = int(conn.port)
+
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
         run_jipipe_ephemeral.apply_async(
-            args=[jipipe_json, parameter_override_json, user_directory_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output, requires_gpu],
+            args=[session_uuid, host, port, jipipe_json, parameter_override_json, user_directory_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output, requires_gpu, override_DOM_elements_map, uuid_to_project_id_map, start_time],
             task_id=job_uuid,
             ignore_result=True,
         )
@@ -344,10 +350,19 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
         error_line = next((line for line in all_log_lines if line.startswith("[J2O_ERROR]")), None)
         status = (
             'error' if error_line else
-            'finished' if any('Run ending at' in line for line in all_log_lines[-10:]) or any("JIPipe container exited with code 0" in line for line in all_log_lines[-1:]) else
+            'finished' if any("Clean-up finished" in line for line in all_log_lines[-10:]) else
             'canceled' if (job_uuid not in active_job_uuid_list) else
             'running'
         )
+
+        # Check if canceled status is correct to prevent race condition
+        if status == 'canceled':
+            with open(log_file_path, 'r') as file_handle:
+                all_log_lines = file_handle.read().splitlines()
+
+                if any("Clean-up finished" in line for line in all_log_lines[-10:]):
+                    status = 'finished'
+
 
         # Remove the job from active cache if it has finished but not removed yet
         if status != "running" and job_uuid in active_job_uuid_list:

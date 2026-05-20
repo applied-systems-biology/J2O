@@ -6,6 +6,8 @@ import podman
 from podman.errors import ImageNotFound, NotFound, APIError
 from JIPipePlugin import settings
 import time
+from omero.gateway import BlitzGateway
+from .services import save_to_omero, remove_temp_directories, get_subdirectories
 
 CPU_PERIOD = settings.CPU_PERIOD
 PER_JOB_CPU_QUOTA = settings.PER_JOB_CPU_QUOTA
@@ -80,7 +82,19 @@ param temp_input: Path to the temporary input directory in the filesystem to sto
 param temp_output: Path to the temporary output directory in the filesystem to store JIPipe output
 """
 @shared_task(bind=True, acks_late=True)
-def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_json: dict, user_directory_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None, requires_gpu: bool = False):
+def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: dict, parameter_override_json: dict, user_directory_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None, requires_gpu: bool = False, override_DOM_elements_map=None, uuid_to_project_id_map=None, start_time=None):
+
+
+    # Connect to OMERO session
+    conn = BlitzGateway(host=host, port=port)
+    ok = conn.connect(sUuid=session_uuid)
+
+    # Raise connection error if session can't be reached
+    if not ok:
+        raise ConnectionError("Unable to connect to OMERO session. Files will NOT be saved to OMERO!")
+    
+    # Enable keepAlive to outmaneuver session dying during long tasks when the browser is closed
+    conn.c.enableKeepAlive(300)
 
     # Initialize logging
     log = logging.getLogger(__name__)
@@ -233,7 +247,7 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
         
         exit_code = container.wait(condition="exited")
         with open(jipipe_log_file_path, "a") as logfile:
-            logfile.write("JIPipe container exited with code {}\n".format(str(exit_code)))
+            logfile.write("\nJIPipe container exited with code {}\n".format(str(exit_code)))
 
         if exit_code != 0 and exit_code < 128:
             raise RuntimeError
@@ -284,9 +298,64 @@ def run_jipipe_ephemeral(self, jipipe_project_config: dict, parameter_override_j
     finally:
         if container is not None:
             container.remove(force=True)
+
         # Release GPU reservation (no-op if no GPU was reserved)
         release_gpu(reserved_gpu, job_uuid, log)
-        user_key = f"active_jipipe_jobs_{omero_user_name}"
-        active = cache.get(user_key, [])
-        active = [job for job in active if job["job_uuid"] != job_uuid]
-        cache.set(user_key, active, timeout=None)
+
+        try:
+            # Get temp_output_directories
+            output_subdirs = get_subdirectories(temp_output)
+
+            with open(jipipe_log_file_path, "a") as logfile:    
+                logfile.write(f"\nSaving processed data to OMERO, please wait...\n")
+
+            num_imported_files = 0
+            num_attached_files = 0
+            for dir in output_subdirs:
+                folder_uuid = dir # Folder name of the output corresponding to the UI element where the user selects output project
+                dataset_name_DOM_element = override_DOM_elements_map.get(f"{folder_uuid}/dataset-name")
+            
+                if not dataset_name_DOM_element:
+                    continue
+
+                path_to_output_folder = f"{temp_output}/{folder_uuid}" # Actual filesystem path where output is put by jipipe via export nodes
+                dataset_name = dataset_name_DOM_element["value"] if dataset_name_DOM_element["value"] != "" else f"{dataset_name_DOM_element['placeholder']}@{start_time}"  # Custom name for the dataset that will be created
+                project_id = uuid_to_project_id_map[folder_uuid]  # Target project in which the dataset will be created
+
+                # Save results to OMERO
+                save_response = save_to_omero(host, port, session_uuid, path_to_output_folder, jipipe_log_file_path, project_id, dataset_name, recursive=False, patterns=None)
+                num_imported_files += save_response["files_imported"]
+                num_attached_files += save_response["files_attached"]
+            
+            # Write summary of saved files to log
+            with open(jipipe_log_file_path, "a") as logfile:    
+                logfile.write(f"\nSaved {num_imported_files} image(s) and attached {num_attached_files} non-image file(s)!\n")
+
+        except Exception as err:
+            err_msg = str(err)
+            log.error("Error saving results to OMERO: %s", err)
+            with open(jipipe_log_file_path, "a") as logfile:
+                logfile.write(f"\n[J2O_ERROR] Error saving results to OMERO: {err}\n")
+        finally:
+            try:
+                with open(jipipe_log_file_path, "a") as logfile:
+                    logfile.write("\nClearing temporary files...\n")
+                # Clean filesystem
+                remove_temp_directories([temp_input, temp_output])
+            except Exception as err:
+                err_msg = str(err)
+                log.error("Error cleaning temp dirs: %s", err)
+                with open(jipipe_log_file_path, "a") as logfile:
+                    logfile.write(f"\n[J2O_ERROR] Error cleaning temp dirs: {err}\n")
+            finally:
+                with open(jipipe_log_file_path, "a") as logfile:
+                    logfile.write("\nClean-up finished!\n")
+
+                # Clean redis cache
+                user_key = f"active_jipipe_jobs_{omero_user_name}"
+                active = cache.get(user_key, [])
+                active = [job for job in active if job["job_uuid"] != job_uuid]
+                cache.set(user_key, active, timeout=None)
+
+                if conn:
+                    conn.close(hard=False)
