@@ -832,7 +832,7 @@
             addTomSelectElementToUI({
               container,
               id: user_dir_key_value,
-              labelText: `User directory: ${user_dir_key_value}`,
+              labelText: `User directory: ${user_dir_name}`,
               items: [...dataset_items.map(x => ({ ...x })), ...plate_items.map(x => ({ ...x }))], // Combine datasets and plates for folder-type inputs
               placeholder: null,
               overrideMap: jip_file_user_directory_overrides,
@@ -1058,7 +1058,7 @@
             const { row, select_element } = addTomSelectElementToUI({
               container,
               id: user_dir_key_value,
-              labelText: `User directory: ${user_dir_key_value}`,
+              labelText: `User directory: ${user_dir_name}`,
               items: project_items.map(x => ({ ...x })), // avoid TomSelect shared-object weirdness
               placeholder: NO_PROJECT_INPUT_VALUE,
               overrideMap: jip_file_user_directory_overrides,
