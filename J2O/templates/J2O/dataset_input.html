@@ -1297,7 +1297,7 @@
       * @param {dict} job_parameter_override - The parameter_overwrite dict that will be passed to JIPipe.
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       */
-      async function executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu) {
+      async function executePipelineJob(uuid_to_project_id_map, job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu) {
 
         // Initial message
         manually_write_to_log_window(`Starting new task with JIPipe version ${global_variable_snapshot.jip_file_major_version}...\n\nFetching logs...\n`);
@@ -1318,7 +1318,9 @@
             input_path: global_variable_snapshot.temp_input,
             output_path: global_variable_snapshot.temp_output,
             jip_file_id: global_variable_snapshot.selectedJipFileID,
-            requires_gpu: requires_gpu
+            requires_gpu: requires_gpu,
+            override_DOM_elements_map: global_variable_snapshot.override_DOM_elements_map,
+            uuid_to_project_id_map: uuid_to_project_id_map
           })
         });
 
@@ -1675,116 +1677,6 @@
         `);
         logWindow.document.close();
       }
-
-      /**
-       * Saves the output from the JIPipe pipeline to the OMERO output project specified by the user. The name will either be user-defined or,
-       * if no input was given, the name of the .jip file followed by a timestamp from when the job was started.
-       * @param {dict} parameter_override_json - JSON that contains the parameter override as defined in the JIPipe documentation.
-       * @param {dict} uuid_to_project_id_map - A dictionary that maps the uuid of the output nodes to a user defined project id in OMERO.
-       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
-       * @param {string} job_start_time - A string containing the start time of the job for tagging the default folder with a timestamp.
-       * @returns {dict} - Returns either info about the saved data in form of JSON or the raw response if it is not JSON.
-      */
-      async function saveOutputToOMERO(uuid_to_project_id_map, global_variable_snapshot, job_start_time, log_file_path) {
-        manually_write_to_log_window('Saving results to OMERO...\n')
-        const results = [];
-
-        // Get subdirectories from temp_output folder
-        const res = await fetch('/J2O/get_temp_output_subdirectories/', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRFToken': csrftoken,
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({ temp_output: global_variable_snapshot.temp_output})
-        });
-
-        const data = await res.json();
-        if (!res.ok) throw new Error(data?.error || 'Failed to list subdirectories');
-
-        for (const dir of data.subdirectories) {
-          const folder_uuid = dir; // Folder name of the output corresponding to the UI element where the user selects output project
-
-          const dataset_name_DOM_element = global_variable_snapshot.override_DOM_elements_map[`${folder_uuid}/dataset-name`];
-          if (!dataset_name_DOM_element){
-            continue;
-          }
-          const path_to_output_folder = `${global_variable_snapshot.temp_output}/${folder_uuid}`; // Actual filesystem path where output is put by jipipe via export nodes
-          const dataset_name = dataset_name_DOM_element.value !== "" ? dataset_name_DOM_element.value : `${dataset_name_DOM_element.placeholder}@${job_start_time}`;  // Custom name for the dataset that will be created
-          const project_id = uuid_to_project_id_map[folder_uuid]  // Target project in which the dataset will be created
-
-          // CALL SAVE_TO_OMERO API POST FUNCTION WITH THESE PARAMETERS (FIRST CREATE THE DATASET IF MISSING THEN SAVE)
-          const res = await fetch('/J2O/save_to_omero/', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': csrftoken,
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({ path: path_to_output_folder, 
-                                  project_id: project_id, 
-                                  dataset_name: dataset_name, 
-                                  recursive: false, 
-                                  log_file_path: log_file_path
-                                })
-          });
-
-          const contentType = res.headers.get('content-type') || '';
-          const raw = await res.text();
-          let data = null;
-
-          if (contentType.includes('application/json')) {
-            try { data = JSON.parse(raw); } catch (e) {
-              console.warn('Failed to parse JSON:', e);
-            }
-          }
-
-          if (!res.ok) {
-            console.error('save_to_omero failed', { status: res.status, body: raw });
-            throw new Error((data && data.error) || `HTTP ${res.status}`);
-          }
-
-          // Push one result per save attempt
-          results.push({
-            folder_uuid,
-            request: { path: path_to_output_folder, project_id, dataset_name },
-            response: data ?? { raw },
-            num_imported_files: data.files_imported,
-            num_attached_files: data.files_attached,
-          });
-        }
-        // If no keys matched, you'll get an empty array; otherwise an array of responses
-        return results;
-      }
-
-      /**
-       * Removes the directories given by the list_of_temp_directories.
-       * @param {list} list_of_temp_directories - A list of directories that should be removed.
-      */
-      async function remove_temp_directories(list_of_temp_directories) {
-        const response = await fetch('/J2O/remove_temp_directories/', {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': csrftoken,
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify({ temp_directories: list_of_temp_directories })
-        });
-
-        const responseJSON = await response.json();
-
-        // If the response is not OK, throw an error with the status code
-        if (!response.ok) {
-          console.error(`Error deleting temp directories: ${responseJSON.error}\n`);
-          throw new Error(`Error deleting temp directories: ${responseJSON.error}`)
-        }
-      }
-
 
       // =============== Helper functions =======================
       /**
@@ -2305,21 +2197,8 @@
             const requires_gpu = gpuCheckbox ? gpuCheckbox.checked : false;
 
             // Execute JIPipe and facilitate the log window livestream
-            const { start_time, job_status, logPath } = await executePipelineJob(job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu);
+            const { start_time, job_status, logPath } = await executePipelineJob(uuid_to_project_id_map, job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu);
             loadRunningJobs();
-
-            // save the output (and the logfile, even when no output is generated)
-            const output_infos = await saveOutputToOMERO(uuid_to_project_id_map, global_variable_snapshot, start_time, logPath);
-
-            // Output the number of saved files to the log window
-            let num_imported_files = 0;
-            let num_attached_files = 0;
-            for (const entry of output_infos){
-              num_imported_files += entry["num_imported_files"];
-              num_attached_files += entry["num_attached_files"];
-            }
-            manually_write_to_log_window(`Saved ${num_imported_files} image(s) and attached ${num_attached_files} non-image file(s)!\n`);
-            console.log("Output saved info: ", output_infos);
 
           // Catch errors and display a useful message to the user depending on the caught error
           }catch(err){
@@ -2329,20 +2208,8 @@
             loadRunningJobs()
           }
 
-          // Always clean filesystem if temporary directories were created
+          // Write a final message to log window and get the time!
           finally{
-              if (global_variable_snapshot) {
-                try {
-                  manually_write_to_log_window('Cleaning filesystem...\n');
-                  await remove_temp_directories([
-                    global_variable_snapshot.temp_input,
-                    global_variable_snapshot.temp_output
-                  ]);
-                } catch (e) {
-                  console.error('Cleanup error:', e);
-                  displayErrorBelowStartButton(`Cleanup error: ${e.message}\n`)
-                }
-              }
               manually_write_to_log_window('J2O finished!\n\n');
               console.timeEnd();
             }
