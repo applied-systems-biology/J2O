@@ -910,7 +910,7 @@
 
               // Get the default value from the nodeMap if available to use as a placeholder (wrap as expression if type is expression)
               let defaultValue = nodesMap[uuid]?.[paramKey] || '';
-              if (paramType && paramType.includes("expression")) {
+              if (paramType && (paramType.includes("expression") || paramType.includes("filter"))) {
                 defaultValue = defaultValue["expression"]
               }
 
@@ -1759,7 +1759,7 @@
           const trimmedInput = inputValue.trim();
 
           // If paramType is defined, check if the value is for an expression parameter (needs to be wrapped)
-          if (paramType && paramType.includes("expression")) {
+          if (paramType && (paramType.includes("expression") || paramType.includes("filter"))) {
             return { expression: trimmedInput };
           }
           // Default: just return trimmed input value
