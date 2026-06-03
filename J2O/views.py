@@ -352,6 +352,7 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
             'error' if error_line else
             'finished' if any("Clean-up finished" in line for line in all_log_lines[-10:]) else
             'canceled' if (job_uuid not in active_job_uuid_list) else
+            'queued' if total_lines == 0 else
             'running'
         )
 
@@ -365,7 +366,7 @@ def fetch_jipipe_logs(request, job_uuid: str, conn=None, **kwargs) -> JsonRespon
 
 
         # Remove the job from active cache if it has finished but not removed yet
-        if status != "running" and job_uuid in active_job_uuid_list:
+        if status != "running" and status != "queued" and job_uuid in active_job_uuid_list:
             active = [job for job in active if job["job_uuid"] != job_uuid]
             cache.set(user_key, active, timeout=CACHE_TIMEOUT)
 
