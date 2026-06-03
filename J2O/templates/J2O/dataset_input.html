@@ -1485,7 +1485,7 @@
                   }
 
                   // Check if job is finished
-                  finished = (status != "running");
+                  finished = (status != "running" && status != "queued");
 
                   // If the backend reported an error, display it in the red error box
                   if (status === "error" && logData.error_message) {
@@ -1551,6 +1551,7 @@
               }
               .status { padding: 10px; margin-bottom: 10px; border-radius: 4px; }
               .running { background: #e3f2fd; color: #1565c0; }
+              .queued { background: #e3f2fd; color: #6f5200; }
               .finished { background: #e8f5e9; color: #2e7d32; }
               .canceled { background: #ffebee; color: #c62828; }
               .error { background: #ffebee; color: #c62828; }
@@ -1654,6 +1655,9 @@
                   statusEl.className = 'status finished';
                   statusEl.textContent = 'Status: Finished';
                   finished = true;
+                } else if (status === 'queued') {
+                  statusEl.className = 'status queued';
+                  statusEl.textContent = 'Status: Waiting for available worker...';
                 } else if (status === 'error') {
                   statusEl.className = 'status error';
                   statusEl.textContent = 'Status: Error';

@@ -338,6 +338,14 @@ def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: 
                     "  command=\"mkdir -p /sys/fs/cgroup/user.slice && echo +cpu +memory +pids > /sys/fs/cgroup/cgroup.subtree_control\"\n"
                     "  Then restart WSL.\n"
                 )
+            if "libcuda.so" in err_msg.lower() or "/usr/lib/wsl/drivers" in err_msg.lower():
+                logfile.write(
+                    "\n[J2O_ERROR] NVIDIA/WSL GPU passthrough appears broken. "
+                    "The Podman NVIDIA CDI spec likely points to a stale libcuda.so path. "
+                    "Run: sudo rm -f /etc/cdi/nvidia.yaml /var/run/cdi/nvidia.yaml && "
+                    "sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml && "
+                    "nvidia-ctk cdi list\n"
+                )
             logfile.write("Stopping task!\n")
 
     finally:
