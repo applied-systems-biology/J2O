@@ -66,10 +66,46 @@
       margin-bottom: var(--space-sm);
     }
 
-    #jipipe_form_container #output {
-      display: none;
+    /* Workflow description header (smaller + underlined, distinct from section h2) */
+    #jipipe_form_container #workflow-description .j2o-description-header {
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: underline;
+      margin: var(--space-sm) 0 var(--space-sm);
     }
 
+    #jipipe_form_container #workflow-description p {
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    #jipipe_form_container #output {
+      display: block;
+    }
+
+    /* Collapsible sections: clickable headers with expand/collapse indicators */
+    #jipipe_form_container #jipipe_info_input_sections section > h2 {
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+    }
+
+    #jipipe_form_container #jipipe_info_input_sections section > h2::before {
+      content: "▾";
+      font-size: 0.9rem;
+      transition: transform 0.2s ease;
+      display: inline-block;
+    }
+
+    #jipipe_form_container #jipipe_info_input_sections section.collapsed > h2::before {
+      transform: rotate(-90deg);
+    }
+
+    #jipipe_form_container #jipipe_info_input_sections section.collapsed > .section-content {
+      display: none;
+    }
     #jipipe_form_container .input-row {
       display: flex;
       flex-direction: column;
@@ -418,11 +454,9 @@
         <select id="JIPSelector" name="JIPSelector">
           <option value="">—Nothing selected—</option>
         </select>
-        <div class="checkbox-row">
-          <label id="enableOutputConfigLabel" class="inline-checkbox-label" for="enableOutputConfig">Enable output config:</label>
-          <input type="checkbox" id="enableOutputConfig" name="enableOutputConfig" unchecked>
-        </div>
       </div>
+      <!-- Workflow description: populated from .jip file metadata (summary/description) -->
+      <div id="workflow-description"></div>
     </section>
 
     <!-- Section: Running jobs -->
@@ -433,32 +467,33 @@
       </ul>
     </section>
 
-    <div id="jipipe_info_input_sections"> 
-      <!-- Section: Summary of node counts -->
-      <section id="file_info">
-        <h2>Node Summary</h2>
-        <!-- Total, input, and output node counts are inserted here -->
-      </section>
-
+    <div id="jipipe_info_input_sections">
       <!-- Section: Input nodes (dataset IDs) -->
       <section id="input">
         <h2>Input Node Configuration</h2>
-        <p>Enter object IDs for each input node:</p>
-        <!-- Input fields for dataset IDs will be generated here -->
+        <div class="section-content">
+          <p>Enter object IDs for each input node:</p>
+          <!-- Input fields for dataset IDs will be generated here -->
+        </div>
       </section>
 
-      <!-- Section: Output nodes (project IDs) -->
-      <section id="output">
+      <!-- Section: Output nodes (project IDs) — collapsed by default -->
+      <section id="output" class="collapsed">
         <h2>Output Node Configuration</h2>
-        <p>Enter project IDs for each output user directory and a name for the generated dataset:</p>
-        <!-- Input fields for project IDs and dataset name will be generated here -->
+        <div class="section-content">
+          <p>Enter project IDs for each output user directory and a name for the generated dataset:</p>
+          <!-- Input fields for project IDs and dataset name will be generated here -->
+          <div id="output-fields-container"></div>
+        </div>
       </section>
 
       <!-- Section: Custom parameters -->
       <section id="parameters">
         <h2>Parameter Configuration</h2>
-        <p>Enter parameter values below:</p>
-        <!-- Parameter input fields will be generated here -->
+        <div class="section-content">
+          <p>Enter parameter values below:</p>
+          <!-- Parameter input fields will be generated here -->
+        </div>
       </section>
     </div>
 
@@ -716,16 +751,59 @@
       }
 
       /**
-       * Display a summary of the nodes in the chosen .jip file in the "Node Summary" section.
-       * @param {JSON} nodesMap - The map of nodes in the pipeline configuration
+       * Remove all HTML elements/tags from a string, returning only the text content.
+       * @param {string} htmlString - The HTML string to strip
+       * @returns {string} The plain text content with surrounding whitespace trimmed
+       */
+      function stripHtml(htmlString) {
+        const temp = document.createElement('div');
+        temp.innerHTML = htmlString;
+        return (temp.textContent || temp.innerText || '').trim();
+      }
+
+      /**
+       * Render the workflow description in the File Selection section.
+       * Prefers the .jip file "summary"; falls back to "description";
+       * if neither provides non-empty text, shows a fallback message.
+       * @param {JSON} jipContent - The parsed content of the .jip file
        * @param {HTMLElement} container - The container to display the content in
        */
-      function displayNodeSummary(nodesMap, container) {
-        try{
-          // Filter nodes to count total, input, and output nodes according to pipeline conventions
+      function renderWorkflowDescription(jipContent, container) {
+        const metadata = jipContent?.metadata ?? {};
+        const summaryText = stripHtml(metadata.summary ?? '');
+        const descriptionText = stripHtml(metadata.description ?? '');
+
+        let displayText;
+        if (summaryText) {
+          displayText = summaryText;
+        } else if (descriptionText) {
+          displayText = descriptionText;
+        } else {
+          displayText = 'No description provided by workflow author';
+        }
+
+        // Build the DOM safely (textContent avoids XSS from .jip content)
+        container.innerHTML = '';
+        const header = document.createElement('h2');
+        header.className = 'j2o-description-header';
+        header.textContent = 'Description';
+        const paragraph = document.createElement('p');
+        paragraph.textContent = displayText;
+        container.appendChild(header);
+        container.appendChild(paragraph);
+      }
+
+      /**
+       * Count the input and output nodes in the chosen .jip file.
+       * Used to determine whether the Start button can be enabled.
+       * @param {JSON} nodesMap - The map of nodes in the pipeline configuration
+       * @returns {Object} An object with inputCount and outputCount number properties
+       */
+      function countWorkflowNodes(nodesMap) {
+        try {
           const allNodes = Object.values(nodesMap);
-          
-          // Count all nodes as input that are defined as inputs node according to the validInput_nodeInfoID_to_referencePath_map or are project-user-directory nodes
+
+          // Count all nodes as input that are defined as inputs node according to the validDatasetInput_nodeInfoID_to_referencePath_map or are project-user-directory nodes
           const inputCount = allNodes.filter(node =>
             typeof node["jipipe:node-info-id"] === "string" &&
             Object.keys(validDatasetInput_nodeInfoID_to_referencePath_map).some(key => node["jipipe:node-info-id"] === key || node["jipipe:node-info-id"] === "project-user-directory")).length;
@@ -733,15 +811,11 @@
           // Count all nodes as output that include "export" in their node-info-id
           const outputCount = allNodes.filter(node => node['jipipe:node-info-id']?.includes('export')).length;
 
-          // Display counts to UI
-          container.innerHTML += `<p>Total nodes: ${allNodes.length}</p>`;
-          container.innerHTML += `<p>Input nodes: ${inputCount}</p>`;
-          container.innerHTML += `<p>Output nodes: ${outputCount}</p>`;
           return { inputCount, outputCount };
-        
-        }catch(err){
-          console.error(`${err.name} constructing summary: ${err.message}`)
-          container.innerHTML = `<p style="color:red;">Error constructing summary: ${err.message}</p>`;
+
+        } catch (err) {
+          console.error(`${err.name} counting workflow nodes: ${err.message}`);
+          return { inputCount: 0, outputCount: 0 };
         }
       }
 
@@ -1119,9 +1193,6 @@
       */
       async function createJobPipelineOverride(global_variable_snapshot) {
         try{
-          // Get the status of the enableConfig checkbox to see whether output parameters needs to be overwritten
-          const customOutputConfigEnabled = document.getElementById('enableOutputConfig').checked;
-
           // Copy the parameter_overrides to create a custom override for each job
           let job_parameter_override = { ...jip_file_parameter_overrides };
           let job_user_directory_override = { ...jip_file_user_directory_overrides };
@@ -2028,6 +2099,14 @@
         setInterval(loadRunningJobs, LOAD_JOBS_INTERVAL * 1000);  // No better solution since OMERO.web doesn't support WebSockets
         listAvailableJIPFiles();
 
+        // EventListener (delegated): On click of a collapsible section header, toggle its
+        // expanded/collapsed state. Attached to the stable parent so it survives DOM swaps.
+        document.getElementById('jipipe_info_input_sections').addEventListener('click', (event) => {
+          if (event.target && event.target.matches('#jipipe_info_input_sections section > h2')) {
+            event.target.closest('section').classList.toggle('collapsed');
+          }
+        });
+
         // EventListener: On change of the .jip file selector, fetch the selected .jip file content and update the UI accordingly
         document.getElementById('JIPSelector').addEventListener('change', async (event) => {
 
@@ -2062,10 +2141,9 @@
                 buffer_div.innerHTML = originalInfoState;
 
                 // Replace the working DOM reference to use the temp container for construction
-                const tempFileInfo = buffer_div.querySelector('#file_info');
-                const tempInput = buffer_div.querySelector('#input');
-                const tempOutput = buffer_div.querySelector('#output');
-                const tempParams = buffer_div.querySelector('#parameters');
+                const tempInput = buffer_div.querySelector('#input .section-content');
+                const tempOutput = buffer_div.querySelector('#output-fields-container');
+                const tempParams = buffer_div.querySelector('#parameters .section-content');
 
                 // Get the JIPipe version of the selected file
                 jip_file_major_version = Number(jip_file_content["dependencies"][0]["version"].split(".")[0])
@@ -2103,23 +2181,17 @@
                   displayWarningAboveStartButton(warningMsg);
                 }
 
-                const {inputCount, outputCount } = displayNodeSummary(nodesMap, tempFileInfo);
+                const {inputCount, outputCount } = countWorkflowNodes(nodesMap);
+                renderWorkflowDescription(jip_file_content, document.getElementById('workflow-description'));
                 await createDatasetInputFields(nodesMap, userDirectories, tempInput);
                 createParameterFields(nodesMap, tempParams);
                 await createOutputProjectInputFields(nodesMap, userDirectories, tempOutput);
 
                 // Start button only enabled if the .jip file has at least one input and one output node
-                if (inputCount > 0 && outputCount > 0){  
+                if (inputCount > 0 && outputCount > 0){
                   startRunnerBtn.disabled = false;
                 }else{
                   startRunnerBtn.disabled = true;
-                }
-
-                if (document.getElementById('enableOutputConfig').checked){
-                  tempOutput.style.display = "block";
-                }
-                else{
-                  tempOutput.style.display = "none";
                 }
 
                 // Replace the visible infoSection with the content of the buffer div
@@ -2132,6 +2204,7 @@
                 infoSection.innerHTML = originalInfoState;
                 infoSection.style.display = "none";
                 clearWarningsAboveStartButton();
+                document.getElementById('workflow-description').innerHTML = '';
               }
             // If no .jip file is selected, reset the info sections to their original empty state
             } else {
@@ -2139,19 +2212,10 @@
               infoSection.innerHTML = originalInfoState;
               infoSection.style.display = "none";
               clearWarningsAboveStartButton();
+              document.getElementById('workflow-description').innerHTML = '';
             }
           });
         
-        // EventListener: On change of the "Enable output config" checkbox, show or hide the output section accordingly
-        document.getElementById('enableOutputConfig').addEventListener('change', (event) => {
-          const outputSection = document.getElementById('output');
-          if (event.target.checked) {
-            outputSection.style.display = 'block';
-          } else {
-            outputSection.style.display = 'none';
-          }
-        });
-
         // EventListener: On click of the start button, execute the pipeline job
         document.getElementById('startRunnerBtn').addEventListener('click', async (event) => {
 
@@ -2230,3 +2294,4 @@
   </script>
 </body>
 </html>
+
