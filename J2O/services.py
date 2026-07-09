@@ -1,4 +1,5 @@
 import os
+import json
 import contextlib
 import fnmatch
 import io
@@ -13,7 +14,7 @@ import omero
 from omero.rtypes import rstring, rlong
 from omero.cli import CLI, NonZeroReturnCode
 import omero.model as omodel
-from omero.model import ProjectI
+from omero.model import ProjectI, MapAnnotationI, NamedValue
 from omero.gateway import BlitzGateway
 
 # Directory where JIPipe files are stored (customizable via Django settings)
@@ -24,7 +25,7 @@ def remove_temp_directories(dirs):
     """
     Delete temp directories, but ONLY if they are within JIPIPE_TEMP_DIR.
 
-    Expects list of directory paths.
+    param dirs: List of directory path strings to delete (each must be within JIPIPE_TEMP_DIR)
 
     Security:
     - only allows directories within JIPIPE_TEMP_DIR
@@ -97,7 +98,7 @@ def get_subdirectories(path, **kwargs):
     """
     Return immediate subdirectories of a given directory path as a list.
 
-    Expects a path.
+    param path: Path to the directory whose immediate subdirectories should be listed (must be within JIPIPE_TEMP_DIR)
 
     Security:
     - only allows paths within JIPIPE_TEMP_DIR
@@ -148,7 +149,44 @@ def get_subdirectories(path, **kwargs):
         raise Exception(str(e))
 
 
-def save_to_omero(host, port, session_uuid, root_dir, log_path, project_id, dataset_name, recursive=True, patterns=None):
+def attach_run_metadata(u, dataset_id, run_metadata, ctx):
+    """
+    Attach a MapAnnotation (key-value pairs) describing the JIPipe run to a Dataset.
+
+    - u: raw UpdateService proxy (so we can pass _ctx explicitly)
+    - dataset_id: ID of the Dataset to annotate
+    - run_metadata: dict of {key: value} describing the run
+    - ctx: per-call Ice context (e.g. {"omero.group": "<gid>"})
+    """
+    if not run_metadata:
+        return
+
+    # Build the list of NamedValue entries, coercing values to strings
+    map_values = []
+    for key, value in run_metadata.items():
+        # Flatten lists/dicts to a compact string representation
+        if isinstance(value, (list, dict)):
+            value_str = json.dumps(value, ensure_ascii=False)
+        else:
+            value_str = str(value)
+        map_values.append(NamedValue(str(key), value_str))
+
+    if not map_values:
+        return
+
+    ma = MapAnnotationI()
+    ma.setMapValue(map_values)
+    ma.setNs(rstring("openmicroscopy.org/omero/jipipe/run-metadata"))
+    ma = u.saveAndReturnObject(ma, _ctx=ctx)
+
+    # Link MapAnnotation -> Dataset
+    dal = omodel.DatasetAnnotationLinkI()
+    dal.setParent(omodel.DatasetI(dataset_id, False))
+    dal.setChild(omodel.MapAnnotationI(ma.getId().getValue(), False))
+    u.saveAndReturnObject(dal, _ctx=ctx)
+
+
+def save_to_omero(host, port, session_uuid, root_dir, log_path, project_id, dataset_name, recursive=True, patterns=None, run_metadata=None):
     """
     - host: Server address running OMERO.web
     - port: Port for the server
@@ -159,10 +197,13 @@ def save_to_omero(host, port, session_uuid, root_dir, log_path, project_id, data
     - dataset_name: Name of the dataset that is saved to OMERO project.
     - recursive: Bool. Determines wether all files or just files directly in root_dir are saved.
     - patterns: Regex. Allows filtering for certain filename patterns.
+    - run_metadata: Optional dict of key-value pairs describing the JIPipe run.
+                    Attached to the Dataset as a MapAnnotation.
 
     Behavior:
       - Creates (or reuses) Dataset in Project
       - Imports files as Images into that Dataset using embedded CLI bound to current conn
+      - Attaches log file and run metadata to the Dataset
       - No session ID string and no username/password required
       - Uses per-call Ice context to set the group (works across OMERO versions)
     """
@@ -225,6 +266,14 @@ def save_to_omero(host, port, session_uuid, root_dir, log_path, project_id, data
             dataset_id = ds_m.id.val
         else:
             dataset_id = ds_obj.getId()
+
+        # ---- Attach run metadata (key-value MapAnnotation) to the Dataset ----
+        try:
+            attach_run_metadata(u, dataset_id, run_metadata, ctx)
+        except Exception as e:
+            # Non-fatal: log attachment failures must not prevent the upload
+            with open(log_path, "a") as _lf:
+                _lf.write(f"\n[metadata] Failed to attach run metadata: {e}\n")
 
 
         # ---- Attach log.txt to the Dataset using ONLY raw services + the same ctx ----
@@ -427,6 +476,13 @@ def save_to_omero(host, port, session_uuid, root_dir, log_path, project_id, data
         raise Exception(str(e))
 
 def _gather_files(root_dir, recursive=True, patterns=None):
+    """
+    Gather a de-duplicated list of file paths under a directory.
+
+    param root_dir: Path to the directory whose files should be gathered
+    param recursive: Bool. If True, walk subdirectories; if False, list only files directly in root_dir
+    param patterns: Optional list of fnmatch glob patterns to filter filenames by
+    """
     try:
         if not recursive:
             files = [os.path.join(root_dir, f) for f in os.listdir(root_dir)

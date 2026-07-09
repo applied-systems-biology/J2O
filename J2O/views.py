@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 def j2o_index(request, conn=None, **kwargs) -> HttpResponse:
     """
     Display the J2O HTML.
+
+    URL: J2O/j2o_index/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
     """
     # GPU is available if a static GPU device is configured (GPU_DEVICES is non-empty).
     gpu_available = bool(settings.GPU_DEVICES.strip())
@@ -76,7 +80,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
 
     # Check for a live worker via inspect().ping()
     try:
-        inspector = app.control.inspect()
+        inspector = app.control.inspect(timeout=5)
         ping_response = inspector.ping() or {}
 
         # If no worker replies, don't start job
@@ -95,6 +99,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         requires_gpu = json_request.get('requires_gpu', False)
         override_DOM_elements_map = json_request.get('override_DOM_elements_map')
         uuid_to_project_id_map = json_request.get('uuid_to_project_id_map')
+        run_metadata = json_request.get('run_metadata', {})
 
         # Server-side fetch of JIPipe file content from OMERO (avoids large request body)
         jip_file = conn.getObject('originalfile', jip_file_id)
@@ -173,8 +178,15 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
 
         # Launch the background thread to run the JIPipe task using Celery and attach the unique job ID for reference
         owner = conn.getUser().getName()
+
+        # Enrich the run metadata with the OMERO user name that started the workflow.
+        # (Start time and execution duration are added by the Celery task itself.)
+        if run_metadata is None:
+            run_metadata = {}
+        run_metadata.setdefault("OMERO user", owner)
+
         run_jipipe_ephemeral.apply_async(
-            args=[session_uuid, host, port, jipipe_json, parameter_override_json, user_directory_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output, requires_gpu, override_DOM_elements_map, uuid_to_project_id_map, start_time],
+            args=[session_uuid, host, port, jipipe_json, parameter_override_json, user_directory_override_json, job_uuid, owner, log_file, major_version, temp_input, temp_output, requires_gpu, override_DOM_elements_map, uuid_to_project_id_map, start_time, run_metadata],
             task_id=job_uuid,
             ignore_result=True,
         )
@@ -265,6 +277,15 @@ def list_jipipe_jobs(request, conn=None, **kwargs):
 @require_GET
 @login_required()
 def get_latest_jipipe_job(request, conn=None, **kwargs):
+    """
+    Return the most recently started active JIPipe job for the current user.
+    Returns a JSON response with the job UUID, name, start time, and the full
+    list of active jobs. If no active jobs exist, all fields are returned as None.
+
+    URL: J2O/get_latest_jipipe_job/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
+    """
 
     try:
         # Get the current user and their active jobs from cache
@@ -749,6 +770,16 @@ def list_available_projects(request, conn=None, **kwargs) -> JsonResponse:
 
 
 def create_temp_directories(request) -> JsonResponse:
+    """
+    Ensure LOG_DIR and JIPIPE_TEMP_DIR exist, then create unique temporary
+    input and output directories inside JIPIPE_TEMP_DIR.
+    Returns a JSON response with the paths to the created temp_input and
+    temp_output directories, or an error if the configured directories cannot
+    be created or written to.
+
+    URL: J2O/create_temp_directories/
+    param request: Django HTTP request object
+    """
 
     # Check permissions early (optional but recommended)
     var_map = {"LOG_DIR": "omero.web.jipipe.logdir", "JIPIPE_TEMP_DIR": "omero.web.jipipe.tempdir"}
@@ -772,6 +803,15 @@ def create_temp_directories(request) -> JsonResponse:
 
 @require_POST
 def create_temp_subdirectories(request) -> JsonResponse:
+    """
+    Create a uniquely named subdirectory inside a parent temp directory.
+    Expects a JSON body with 'parent_path' (the parent directory) and 'uuid'
+    (the name of the subdirectory to create).
+    Returns a JSON response with the path to the created subdirectory.
+
+    URL: J2O/create_temp_subdirectories/
+    param request: Django HTTP request object
+    """
 
     # Get the uuid lists from the request
     json_request = json.loads(request.body.decode('utf-8'))
@@ -795,6 +835,9 @@ def remove_temp_directories(request):
     Security:
     - only allows directories within JIPIPE_TEMP_DIR
     - refuses deleting JIPIPE_TEMP_DIR itself
+
+    URL: J2O/remove_temp_directories/
+    param request: Django HTTP request object
     """
     try:
         try:
@@ -944,6 +987,8 @@ def parse_prefixed_id(raw_id: str) -> tuple:
     Parse a prefixed ID string like 'Dataset:123' or 'Plate:456'.
     Returns (type_str, numeric_id).
     Unprefixed numeric strings default to ('Dataset', int) for backward compatibility.
+
+    param raw_id: Prefixed OMERO ID string (e.g. 'Dataset:123') or a bare numeric ID
     """
     raw_id = raw_id.strip()
     if ":" in raw_id:
@@ -958,6 +1003,9 @@ def well_to_name(row: int, column: int) -> str:
     Row 0 -> A, Row 1 -> B, etc.
     Column 0 -> 1, Column 1 -> 2, etc. (no leading zero)
     Example: row=0, column=0 -> 'A1'
+
+    param row: Zero-indexed well row (0 -> A, 1 -> B, ...)
+    param column: Zero-indexed well column (0 -> 1, 1 -> 2, ...)
     """
     row_letter = chr(ord('A') + row)
     return f"{row_letter}{column + 1}"
@@ -967,12 +1015,18 @@ def sanitize_name(name: str) -> str:
     """
     Sanitize an OMERO object name for use as a filesystem folder name.
     Replaces characters that are invalid in paths with underscores.
+
+    param name: Raw OMERO object name (e.g. of a Dataset, Plate, or Project) to sanitize
     """
     return re.sub(r'[/\\:*?"<>|]', '_', name)
 
 
 def _get_group_id(obj):
-    """Extract the integer group ID from an OMERO gateway object's details."""
+    """
+    Extract the integer group ID from an OMERO gateway object's details.
+
+    param obj: OMERO gateway wrapper object (e.g. Dataset, Plate, OriginalFile) whose details hold the group
+    """
     g = obj.getDetails().group.id
     if hasattr(g, 'val'):
         return g.val
@@ -987,6 +1041,12 @@ def download_original_file_with_ctx(conn, obj, target_path, gid, chunk_size=1024
 
     This preserves the implicit session context and only adds/overrides
     omero.group, matching OMERO's own context-handling pattern.
+
+    param conn: OMERO BlitzGateway connection used to access the RawFileStore
+    param obj: OMERO gateway wrapper (or raw model object) of the OriginalFile to download
+    param target_path: Absolute filesystem path where the file should be saved
+    param gid: Integer OMERO group ID to set in the per-call Ice context
+    param chunk_size: Size in bytes of each read chunk (default 1 MiB)
     """
     try:
         implicit_ctx = conn.c.ic.getImplicitContext()
@@ -1023,6 +1083,19 @@ def download_original_file_with_ctx(conn, obj, target_path, gid, chunk_size=1024
 @require_POST
 @login_required()
 def save_input_to_server(request, conn=None, **kwargs):
+    """
+    Copy content of OMERO objects (Datasets, Plates, or OriginalFiles) to a temp
+    directory on the server so they can be used as JIPipe workflow input.
+    Expects a JSON body with 'path' (output directory), 'input_key' (the
+    folder structure mode: 'folder-path', 'folder-paths', 'file-name', or
+    'file-names'), and 'ids' (comma-separated prefixed OMERO IDs).
+    Returns a JSON response with the number of processed/saved files, the
+    per-file save results, any errors, and the destination path(s).
+
+    URL: J2O/save_input_to_server/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
+    """
     try:
         try:
             payload = json.loads(request.body.decode('utf-8'))
@@ -1508,6 +1581,11 @@ def save_input_to_server(request, conn=None, **kwargs):
 @login_required()
 def save_to_omero(request, conn=None, **kwargs):
     """
+    Import files from a temp directory into an OMERO Dataset as Images/attachments 
+    using the OMERO API. Expects a JSON body with 'path' (directory to import from), 
+    'project_id' (destination OMERO project), and optional 'dataset_name', 'recursive', 
+    and 'patterns' fields.
+
     POST JSON:
     {
       "path": "/abs/path/to/dir",
@@ -1521,6 +1599,10 @@ def save_to_omero(request, conn=None, **kwargs):
       - Imports files as Images into that Dataset using embedded CLI bound to current conn
       - No session ID string and no username/password required
       - Uses per-call Ice context to set the group (works across OMERO versions)
+
+    URL: J2O/save_to_omero/
+    param request: Django HTTP request object
+    param conn: OMERO connection object (optional, used for user context)
     """
     DEFAULT_PROJECT_NAME = "JipipeResultsDefault"
     try:
@@ -1791,6 +1873,13 @@ def save_to_omero(request, conn=None, **kwargs):
         return JsonResponse({"error": f"{e}", "trace": traceback.format_exc()}, status=500)
 
 def _gather_files(root_dir, recursive=True, patterns=None):
+    """
+    Gather a de-duplicated list of file paths under a directory.
+
+    param root_dir: Path to the directory whose files should be gathered
+    param recursive: Bool. If True, walk subdirectories; if False, list only files directly in root_dir
+    param patterns: Optional list of fnmatch glob patterns to filter filenames by
+    """
     if not recursive:
         files = [os.path.join(root_dir, f) for f in os.listdir(root_dir)
                  if os.path.isfile(os.path.join(root_dir, f))]
