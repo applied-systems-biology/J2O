@@ -32,6 +32,15 @@ def get_omero_config(key: str, default: str) -> str:
 
 HOME = Path("~").expanduser()
 # Plugin-specific defaults or OMERO overrides
+
+# J2O debug mode.
+# When True, verbose logging is enabled (DEBUG level) on the Python side and
+# the frontend exposes debug output in the browser console.
+# When False (default / production), only warnings and errors are logged.
+# Configure at runtime via the OMERO config:
+#     omero config set omero.web.jipipe.debug True
+J2O_DEBUG = get_omero_config("omero.web.jipipe.debug", "False").lower() in ("1", "true", "yes", "on")
+
 J2O_TEMP_DIR = get_omero_config("omero.web.jipipe.tempdir", os.fspath(HOME / "j2o-files" / "data"))
 J2O_LOG_DIR = get_omero_config("omero.web.jipipe.logdir", os.fspath(HOME / "j2o-files" / "logs"))
 JIPIPE_ARTIFACTS_DIR = os.fspath(HOME / ".local" / "share" / "JIPipe" / "artifacts")

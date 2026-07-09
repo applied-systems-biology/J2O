@@ -61,7 +61,11 @@ def j2o_index(request, conn=None, **kwargs) -> HttpResponse:
     return render(
         request,
         'J2O/dataset_input.html',
-        {'gpu_available': gpu_available}
+        {
+            'gpu_available': gpu_available,
+            # Expose debug flag so the frontend can gate verbose console output.
+            'j2o_debug': getattr(settings, 'J2O_DEBUG', False),
+        }
     )
 
 @require_POST
