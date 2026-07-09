@@ -1206,6 +1206,13 @@
           // Create a map that links the UUID (i.e. the name) of the temp_output folder to the destination project ID in OMERO
           let uuid_to_project_id_map = {};
 
+          // Collect metadata about this run: the OMERO IDs used as input and the
+          // values of every editable parameter. These are attached to the output
+          // Dataset(s) as key-value pairs (MapAnnotation) by the backend.
+          let run_metadata = {};
+          // Put the workflow file name at the top of the key-value pairs
+          run_metadata["Workflow file"] = jip_file_name;
+
           // Iterate the parameter_override dict to change the values according to user input
           for (const [key, _] of Object.entries(stale_jip_file_parameter_overrides_copy)) {
 
@@ -1237,9 +1244,13 @@
               const responseJSON = await saveInputToServer(destination_path, inputValue, matchedValue);
               console.log("Input object info: ", responseJSON);
               finalValue = responseJSON['destination_path_s'];
+              // Record the OMERO IDs that were used as input for this node
+              run_metadata[`Input (${key})`] = inputValue;
             // If any other parameter input
             }else{
               finalValue = transformToJIPipeCompatibleValue(inputValue, key, paramType);
+              // Record the editable parameter value set by the user
+              run_metadata[`Parameter (${key})`] = inputValue;
             }
 
             // Overwrite the entry with the JIPipe compatible value
@@ -1288,6 +1299,8 @@
               if (dirName.toLowerCase().includes("input")){
                 const responseJSON = await saveInputToServer(destination_path, inputValue, "folder-paths"); // Input user directories are handled like folder with a subfolder for each dataset
                 console.log("Input object info: ", responseJSON)
+                // Record the OMERO IDs that were used as input for this user directory
+                run_metadata[`Input (${dirName})`] = inputValue;
               }
 
               // Overwrite the entry with the JIPipe compatible value
@@ -1297,8 +1310,9 @@
           
           // Print content to console for checking correctness!
           console.log("JIPipe user directory override input: ", job_user_directory_override);
+          console.log("J2O run metadata: ", run_metadata);
 
-          return {job_parameter_override, job_user_directory_override, uuid_to_project_id_map};
+          return {job_parameter_override, job_user_directory_override, uuid_to_project_id_map, run_metadata};
         }catch(err){
           throw new Error(`Error trying to create parameter override: ${err.message}`)
         }
@@ -1368,7 +1382,7 @@
       * @param {dict} job_parameter_override - The parameter_overwrite dict that will be passed to JIPipe.
       * @param {dict} global_variable_snapshot - A dictionary that contains a snapshot of the global variables at the start of the job.
       */
-      async function executePipelineJob(uuid_to_project_id_map, job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu) {
+      async function executePipelineJob(uuid_to_project_id_map, job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu, run_metadata) {
 
         // Initial message
         manually_write_to_log_window(`Starting new task with JIPipe version ${global_variable_snapshot.jip_file_major_version}...\n\nFetching logs...\n`);
@@ -1391,7 +1405,8 @@
             jip_file_id: global_variable_snapshot.selectedJipFileID,
             requires_gpu: requires_gpu,
             override_DOM_elements_map: global_variable_snapshot.override_DOM_elements_map,
-            uuid_to_project_id_map: uuid_to_project_id_map
+            uuid_to_project_id_map: uuid_to_project_id_map,
+            run_metadata: run_metadata
           })
         });
 
@@ -2258,14 +2273,14 @@
             console.log("OVERRIDE DOM ELEMENTS", global_variable_snapshot.override_DOM_elements_map)
 
             // Create the parameter override containing user input to be provided to JIPipe
-            let { job_parameter_override, job_user_directory_override, uuid_to_project_id_map } = await createJobPipelineOverride(global_variable_snapshot);
+            let { job_parameter_override, job_user_directory_override, uuid_to_project_id_map, run_metadata } = await createJobPipelineOverride(global_variable_snapshot);
 
             // Read GPU requirement from checkbox (may not exist if GPU is not available)
             const gpuCheckbox = document.getElementById('requiresGpuCheckbox');
             const requires_gpu = gpuCheckbox ? gpuCheckbox.checked : false;
 
             // Execute JIPipe and facilitate the log window livestream
-            const { start_time, job_status, logPath } = await executePipelineJob(uuid_to_project_id_map, job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu);
+            const { start_time, job_status, logPath } = await executePipelineJob(uuid_to_project_id_map, job_parameter_override, job_user_directory_override, global_variable_snapshot, requires_gpu, run_metadata);
             loadRunningJobs();
 
           // Catch errors and display a useful message to the user depending on the caught error

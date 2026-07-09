@@ -1,6 +1,7 @@
 from celery import shared_task
 import json, os, logging
 from pathlib import Path
+from datetime import datetime
 from django.core.cache import cache
 import podman
 from podman.errors import ImageNotFound, NotFound, APIError
@@ -30,6 +31,9 @@ def reserve_gpu(job_uuid: str, log: logging.Logger) -> int | None:
     disabled (``GPU_COUNT == 0``). Also does not reserve GPU when no device is listed in GPU_DEVICES.
 
     Raises ``RuntimeError`` if no GPU is available.
+
+    param job_uuid: Unique identifier of the JIPipe job requesting the GPU
+    param log: Logger used to record reservation success/failure messages
     """
     if GPU_COUNT <= 0 or not GPU_DEVICES:
         return None  # scheduler disabled – caller will fall back to GPU_DEVICES
@@ -54,7 +58,13 @@ def reserve_gpu(job_uuid: str, log: logging.Logger) -> int | None:
 
 
 def release_gpu(gpu_idx: int, job_uuid: str, log: logging.Logger) -> None:
-    """Release a GPU reservation, but only if it still belongs to *job_uuid*."""
+    """
+    Release a GPU reservation, but only if it still belongs to *job_uuid*.
+
+    param gpu_idx: Index of the GPU reservation to release (None is a no-op)
+    param job_uuid: Unique identifier of the JIPipe job that owns the reservation
+    param log: Logger used to record release/override messages
+    """
     if gpu_idx is None:
         return
     key = f"j2o_gpu_reserved_{gpu_idx}"
@@ -70,19 +80,32 @@ def release_gpu(gpu_idx: int, job_uuid: str, log: logging.Logger) -> None:
         )
 
 """
-This task runs an ephemeral docker container that will execute the provided .jip file using JIPipe.
+This task runs an ephemeral container that will execute the provided .jip file using JIPipe.
 It utilizes a temporary filesystem for input/output handling and will update the redis cache to track active tasks.
 After it finishes, the container is removed, but the output will in the temporary filesystem until it is uploaded to OMERO later on.
 
+param session_uuid: Unqiue identifier of a OMERO web session. Used to connect back to the web session.
+param host: Host address of the OMERO web client. Used to connect back to the web session.
+param port: Port of the OMERO web client. Used to connect back to the web session.
 param jipipe_project_config: JSON configuration of the JIPipe project (the contents of the selected .jip file)
+param parameter_override_json: JSON file mapping override values to node parameters. Used to apply user config to workflow.
+param user_directory_override_json: JSON file mapping input/output user directories to OMERO data objects.
 param job_uuid: Unique identifier for the JIPipe job
 param omero_user_name: Username of the OMERO user running the job for tracking ownership of jobs
 param jipipe_log_file_path: Path to the log file for the JIPipe job
+param jipipe_version: Integer used to identify the major JIPipe version used in the workflow. Used to pull the correct image from Docker Hub.
 param temp_input: Path to the temporary input directory in the filesystem to store JIPipe input
 param temp_output: Path to the temporary output directory in the filesystem to store JIPipe output
+param requires_gpu: Boolean to identify wether GPU needs to be used or not.
+param override_DOM_elements_map: Dictionary that maps user input to DOM elements. Necessary to retain information after DOM elements get reloaded. 
+param uuid_to_project_id_map: Dictionary that maps the UUID of the folder in the temp_output directory to the ID of the destination project in OMERO.
+param start_time: Start time to be attached to the dataset as a key-value pair.
+param run_metadata: Workflow execution-specific metadata to be attached to result dataset as key-value pairs.
 """
 @shared_task(bind=True, acks_late=True)
-def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: dict, parameter_override_json: dict, user_directory_override_json: dict, job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None, requires_gpu: bool = False, override_DOM_elements_map=None, uuid_to_project_id_map=None, start_time=None):
+def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: dict, parameter_override_json: dict, user_directory_override_json: dict, 
+                         job_uuid: str, omero_user_name: str, jipipe_log_file_path: str, jipipe_version: int, temp_input: str, temp_output: str | None = None, 
+                         requires_gpu: bool = False, override_DOM_elements_map=None, uuid_to_project_id_map=None, start_time=None, run_metadata=None):
 
 
     # Connect to OMERO session
@@ -98,6 +121,9 @@ def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: 
 
     # Initialize logging
     log = logging.getLogger(__name__)
+
+    # Record the actual execution start time (wall clock when the task body begins)
+    execution_start = datetime.now()
 
     # Empty container variable
     container = None
@@ -314,7 +340,15 @@ def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: 
             # Get temp_output_directories
             output_subdirs = get_subdirectories(temp_output)
 
-            with open(jipipe_log_file_path, "a") as logfile:    
+            # Finalize run metadata: compute total execution duration and merge in base info
+            execution_end = datetime.now()
+            execution_duration_seconds = (execution_end - execution_start).total_seconds()
+            final_run_metadata = dict(run_metadata) if run_metadata else {}
+            final_run_metadata.setdefault("OMERO user", omero_user_name)
+            final_run_metadata.setdefault("Start time", start_time)
+            final_run_metadata.setdefault("Execution time (seconds)", f"{execution_duration_seconds:.1f}")
+
+            with open(jipipe_log_file_path, "a") as logfile:
                 logfile.write(f"\nSaving processed data to OMERO, please wait...\n")
 
             num_imported_files = 0
@@ -330,8 +364,8 @@ def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: 
                 dataset_name = dataset_name_DOM_element["value"] if dataset_name_DOM_element["value"] != "" else f"{dataset_name_DOM_element['placeholder']}@{start_time}"  # Custom name for the dataset that will be created
                 project_id = uuid_to_project_id_map[folder_uuid]  # Target project in which the dataset will be created
 
-                # Save results to OMERO
-                save_response = save_to_omero(host, port, session_uuid, path_to_output_folder, jipipe_log_file_path, project_id, dataset_name, recursive=False, patterns=None)
+                # Save results to OMERO (including the run metadata as a MapAnnotation)
+                save_response = save_to_omero(host, port, session_uuid, path_to_output_folder, jipipe_log_file_path, project_id, dataset_name, recursive=False, patterns=None, run_metadata=final_run_metadata)
                 num_imported_files += save_response["files_imported"]
                 num_attached_files += save_response["files_attached"]
             
