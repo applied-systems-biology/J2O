@@ -534,7 +534,25 @@
   <link href="https://cdn.jsdelivr.net/npm/tom-select@2.4.3/dist/css/tom-select.css" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/tom-select@2.4.3/dist/js/tom-select.complete.min.js"></script>
 
+  {# Server-side settings serialized as JSON so the script block stays pure JS #}
+  {{ j2o_debug|yesno:"true,false"|json_script:"j2o-debug" }}
+
   <script>
+    // Read the debug flag injected by the server as a JSON <script> element.
+    // In production J2O_DEBUG is false, so debug() is a no-op and no verbose
+    // output pollutes the browser console.
+    const J2O_DEBUG = JSON.parse(document.getElementById('j2o-debug').textContent);
+
+    /**
+     * Log a debug message to the browser console only when J2O_DEBUG is enabled.
+     * Accepts the same arguments as console.log().
+     */
+    function debug(...args) {
+      if (J2O_DEBUG) {
+        console.log(...args);
+      }
+    }
+
     (async function () {
       // ============= global variables used across the script ====================
       let jip_file_content = null;  // Holds the fetched .jip file contents
@@ -1219,7 +1237,7 @@
             // Get the input error from DOM element. If it does not exist, skip!
             const { exists, inputValue } = getInputValueOrThrow(key, global_variable_snapshot.override_DOM_elements_map);
             if(!exists){
-              console.log(`No input DOM element for ${key} (stored in parameter override)!`);
+              debug(`No input DOM element for ${key} (stored in parameter override)!`);
               continue;
             }
 
@@ -1242,7 +1260,7 @@
               const destination_path = `${global_variable_snapshot.temp_input}/${folder_uuid}`;
               await create_temp_subdirectories(global_variable_snapshot.temp_input, folder_uuid);
               const responseJSON = await saveInputToServer(destination_path, inputValue, matchedValue);
-              console.log("Input object info: ", responseJSON);
+              debug("Input object info: ", responseJSON);
               finalValue = responseJSON['destination_path_s'];
               // Record the OMERO IDs that were used as input for this node
               run_metadata[`Input (${key})`] = inputValue;
@@ -1259,7 +1277,7 @@
           }
 
           // Print content to console for checking correctness!
-          console.log("JIPipe parameter override input: ", job_parameter_override);
+          debug("JIPipe parameter override input: ", job_parameter_override);
           
           // Get user directories from jip_file_content to access the name field
           const userDirectories = jip_file_content?.metadata?.["user-directories"]?.["user-directories"]?.items ?? [];
@@ -1270,7 +1288,7 @@
             // Get the input error from DOM element. If it does not exist, skip!
             const { exists, inputValue } = getInputValueOrThrow(key, global_variable_snapshot.override_DOM_elements_map);
             if(!exists){
-              console.log(`No input DOM element for ${key} (stored in user directory override)!`);
+              debug(`No input DOM element for ${key} (stored in user directory override)!`);
               continue;
             }
 
@@ -1298,7 +1316,7 @@
               // Only put input data from OMERO in temp folder if user dir is marked as input
               if (dirName.toLowerCase().includes("input")){
                 const responseJSON = await saveInputToServer(destination_path, inputValue, "folder-paths"); // Input user directories are handled like folder with a subfolder for each dataset
-                console.log("Input object info: ", responseJSON)
+                debug("Input object info: ", responseJSON)
                 // Record the OMERO IDs that were used as input for this user directory
                 run_metadata[`Input (${dirName})`] = inputValue;
               }
@@ -1309,8 +1327,8 @@
           }
           
           // Print content to console for checking correctness!
-          console.log("JIPipe user directory override input: ", job_user_directory_override);
-          console.log("J2O run metadata: ", run_metadata);
+          debug("JIPipe user directory override input: ", job_user_directory_override);
+          debug("J2O run metadata: ", run_metadata);
 
           return {job_parameter_override, job_user_directory_override, uuid_to_project_id_map, run_metadata};
         }catch(err){
@@ -1541,9 +1559,6 @@
                     await sleep(latest_job_id !== jobId ? 5000 : 1000);
                     continue;
                   }
-
-                  // Debug: log key variables
-                  console.log(`[updateLogWindow] jobId=${jobId}, latest_job_id=${latest_job_id}, currentOffset=${currentOffset}, logs.length=${logs?.length}, total_lines=${logData.total_lines}, status=${status}`);
 
                   // Update log output using offset-based approach (same as pop-up window)
                   if (latest_job_id === jobId) {
@@ -2269,8 +2284,8 @@
               selectedJipFileID,
               override_DOM_elements_map: create_DOM_elements_map() // Create a map of DOM elements that contain info for overrides on start of job so DOM updates don't delete info
             };
-
-            console.log("OVERRIDE DOM ELEMENTS", global_variable_snapshot.override_DOM_elements_map)
+            
+            debug("OVERRIDE DOM ELEMENTS", global_variable_snapshot.override_DOM_elements_map)
 
             // Create the parameter override containing user input to be provided to JIPipe
             let { job_parameter_override, job_user_directory_override, uuid_to_project_id_map, run_metadata } = await createJobPipelineOverride(global_variable_snapshot);
