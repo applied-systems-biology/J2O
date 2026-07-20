@@ -191,7 +191,7 @@ def run_jipipe_ephemeral(self, session_uuid, host, port, jipipe_project_config: 
             "--output-folder",        f"{temp_output}",
         ]
 
-        if jipipe_version >= 4:
+        if jipipe_version >= 5:
              command.append("--fast-init")
 
         # Determine GPU device list and environment based on requires_gpu flag and scheduler state
