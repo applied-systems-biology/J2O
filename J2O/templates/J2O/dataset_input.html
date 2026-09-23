@@ -2123,6 +2123,9 @@
 
       // =============== Initialization: fetch config and render UI =====================
       try {
+        // one per page load, increments per run; necessary for unique timers per workflow
+        let runCounter = 0;
+        
         // Load the running jobs and available .jip files
         document.getElementById('jipipe_info_input_sections').style.display = "none";  // Hide info DOM elements until .jip file is selected
         loadRunningJobs();
@@ -2253,7 +2256,8 @@
           clearErrorsBelowStartButton();
 
           // Measure runtime
-          console.time();
+          const runTimerLabel = `J2O pipeline run #${++runCounter}`;
+          console.time(runTimerLabel);
 
           // Disable start button shortly so it can't be clicked twice in a row
           const startRunnerBtn= document.getElementById('startRunnerBtn');
@@ -2309,7 +2313,7 @@
           // Write a final message to log window and get the time!
           finally{
               manually_write_to_log_window('J2O finished!\n\n');
-              console.timeEnd();
+              console.timeEnd(runTimerLabel);
             }
         });                       
       }
