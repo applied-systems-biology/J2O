@@ -113,6 +113,44 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
         raw_bytes = b''.join(jip_file.getFileInChunks())
         if jip_file.getName().endswith('.jip'):
             jipipe_json = json.loads(raw_bytes.decode('utf-8'))
+        elif jip_file.getName().endswith('.jipx'):
+            # Reassemble the split JIPipe 6 project into a monolithic
+            # JIPipe project dictionary.
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zip_ref:
+                archive_files = set(zip_ref.namelist())
+
+                if 'jipx.json' not in archive_files:
+                    raise ValueError("No jipx.json manifest found in the .jipx archive.")
+
+                manifest = json.loads(
+                    zip_ref.read('jipx.json').decode('utf-8')
+                )
+                parts = manifest.get('parts')
+
+                if not isinstance(parts, dict):
+                    raise ValueError("Invalid .jipx manifest: 'parts' must be an object.")
+
+                jipipe_json = {
+                    'jipipe:project-type': 'project',
+                    'jipipe:project-format-version':
+                        manifest.get('format-version', 1),
+                }
+
+                # Each manifest entry maps an archive path to a .jip top-level key.
+                for part_path, part_name in parts.items():
+                    if not isinstance(part_path, str) or not isinstance(part_name, str):
+                        raise ValueError(
+                            "Invalid .jipx manifest: part paths and names must be strings."
+                        )
+
+                    if part_path not in archive_files:
+                        raise ValueError(
+                            f"Missing project part '{part_path}' in the .jipx archive."
+                        )
+
+                    jipipe_json[part_name] = json.loads(
+                        zip_ref.read(part_path).decode('utf-8')
+                    )
         elif jip_file.getName().endswith('.zip'):
             # Extract .jip from zip archive
             with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zip_ref:
@@ -127,7 +165,7 @@ def start_jipipe_job(request, conn=None, **kwargs) -> JsonResponse:
                 with zip_ref.open(json_filename) as json_file:
                     jipipe_json = json.loads(json_file.read().decode('utf-8'))
         else:
-            raise TypeError("Selected file is neither .jip nor .zip and is therefore not supported!")
+            raise TypeError("Selected file is neither .jip nor .jipx nor .zip and is therefore not supported!")
 
         # For .zip files, also extract all other files to temp_input for the Celery task
         # (jipipe_json was already extracted above)
@@ -430,11 +468,49 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
         if jip_file is None:
             raise FileNotFoundError(f".jip file with ID {jip_file_id} not found.")
         
-        # Read and parse the JSON data from the annotation (file is either .jip or .zip for RO-Crates)
+        # Read and parse the JSON data from the annotation (file is either .jip, .jipx or .zip)
         raw_bytes = b''.join(jip_file.getFileInChunks())
         if jip_file.getName().endswith('.jip'):
             config_text = raw_bytes.decode('utf-8')
             config_data = json.loads(config_text)
+
+        elif jip_file.getName().endswith('.jipx'):
+            # JIPipe 6 stores the project parts as separate JSON files in the archive.
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zip_ref:
+                archive_files = set(zip_ref.namelist())
+
+                if 'jipx.json' not in archive_files:
+                    raise ValueError("No jipx.json manifest found in the .jipx archive.")
+
+                jipx_manifest = json.loads(
+                    zip_ref.read('jipx.json').decode('utf-8')
+                )
+                parts = jipx_manifest.get('parts')
+
+                if not isinstance(parts, dict):
+                    raise ValueError("Invalid .jipx manifest: 'parts' must be an object.")
+
+                # Recreate the header used by a monolithic .jip project.
+                config_data = {
+                    'jipipe:project-type': 'project',
+                    'jipipe:project-format-version':
+                        jipx_manifest.get('format-version', 1),
+                }
+
+                # The manifest maps each archive path to its .jip top-level key.
+                for part_path, part_name in parts.items():
+                    if not isinstance(part_path, str) or not isinstance(part_name, str):
+                        raise ValueError("Invalid .jipx manifest: part paths and names must be strings.")
+
+                    if part_path not in archive_files:
+                        raise ValueError(
+                            f"Missing project part '{part_path}' in the .jipx archive."
+                        )
+
+                    config_data[part_name] = json.loads(
+                        zip_ref.read(part_path).decode('utf-8')
+                    )
+
         elif jip_file.getName().endswith('.zip'):
             # Open the zip file in memory using a BytesIO object
             with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zip_ref:
@@ -456,7 +532,7 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
                     config_text = json_file.read().decode('utf-8')
                     config_data = json.loads(config_text)
         else:
-            raise TypeError("Selected file is neither .jip nor .zip and is therefore not supported!")
+            raise TypeError("Selected file is neither .jip nor .jipx nor .zip and is therefore not supported!")
 
     
     except FileNotFoundError as e:
@@ -465,11 +541,15 @@ def get_jipipe_config(request, jip_file_id: int, conn=None, **kwargs) -> JsonRes
     
     except json.JSONDecodeError as parse_error:
         logger.error('Failed to parse JIPipe JSON: %s', parse_error)
-        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=400)
+        return JsonResponse({'error': str(parse_error), 'trace': traceback.format_exc()}, status=400)
     
     except TypeError as e:
         logger.error(str(e), exc_info=1)
         return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=422)
+
+    except (zipfile.BadZipFile, ValueError) as e:
+        logger.error(str(e), exc_info=True)
+        return JsonResponse({'error': str(e), 'trace': traceback.format_exc()}, status=400)
 
     return JsonResponse(config_data, safe=False)
 
@@ -516,8 +596,8 @@ def list_jipipe_files(request, conn=None, **kwargs) -> JsonResponse:
                 # The FileAnnotation wrapper has a .getFile() method returning a FileI
                 file_name = file_annotation.getFile().getName()
 
-                # Only add .jip and .zip files
-                if file_name.endswith(".jip") or file_name.endswith(".zip"):
+                # Only add .jip (legacy JIPipe), .jipx (starting from JIPipe 6) and .zip (RO-Crate format) files
+                if file_name.endswith(".jip") or file_name.endswith(".jipx") or file_name.endswith(".zip"):
                     all_jip_annotations.append({
                         'file_id': file_id,
                         'file_name': file_name
